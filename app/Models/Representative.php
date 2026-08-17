@@ -17,6 +17,11 @@ class Representative extends Model
         return $this->hasMany(DeliveryOrder::class);
     }
 
+    public function deliveryTours(): HasMany
+    {
+        return $this->hasMany(DeliveryTour::class);
+    }
+
     /**
      * @return array<string, string>
      */

@@ -4,6 +4,9 @@ namespace App\Models;
 
 use App\Enums\DeliveryOrderResult;
 use App\Enums\DeliveryOrderStatus;
+use App\Enums\DeliveryStatus;
+use App\Enums\LocationValidationStatus;
+use App\Enums\ReadinessStatus;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,10 +16,20 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 #[Fillable([
     'customer_id',
     'representative_id',
+    'location_id',
+    'tour_id',
     'value',
     'location_link',
     'latitude',
     'longitude',
+    'location_validation_status',
+    'readiness_status',
+    'available_from',
+    'available_until',
+    'confirmed_at',
+    'delivery_status',
+    'status_reason',
+    'location_completed_at',
     'status',
     'result',
     'completed_at',
@@ -38,6 +51,26 @@ class DeliveryOrder extends Model
     public function representative(): BelongsTo
     {
         return $this->belongsTo(Representative::class);
+    }
+
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class);
+    }
+
+    public function deliveryTour(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryTour::class, 'tour_id');
+    }
+
+    public function routeStops(): HasMany
+    {
+        return $this->hasMany(RouteStop::class);
+    }
+
+    public function orderChanges(): HasMany
+    {
+        return $this->hasMany(OrderChange::class);
     }
 
     /**
@@ -65,6 +98,13 @@ class DeliveryOrder extends Model
             'value' => 'decimal:2',
             'latitude' => 'decimal:7',
             'longitude' => 'decimal:7',
+            'location_validation_status' => LocationValidationStatus::class,
+            'readiness_status' => ReadinessStatus::class,
+            'available_from' => 'datetime',
+            'available_until' => 'datetime',
+            'confirmed_at' => 'datetime',
+            'delivery_status' => DeliveryStatus::class,
+            'location_completed_at' => 'datetime',
             'status' => DeliveryOrderStatus::class,
             'result' => DeliveryOrderResult::class,
             'completed_at' => 'datetime',
