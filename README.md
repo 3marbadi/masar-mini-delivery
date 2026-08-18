@@ -88,10 +88,12 @@ Set these environment variables locally:
 
 ```dotenv
 MASAR_INTEGRATION_URL=
-MASAR_INTEGRATION_TOKEN=
+MASAR_INTEGRATION_CLIENT_ID=
+MASAR_INTEGRATION_CLIENT_SECRET=
+MASAR_INTEGRATION_TOKEN_SAFETY_SECONDS=60
 ```
 
-`MASAR_INTEGRATION_URL` is the receiving Masar service base URL. `MASAR_INTEGRATION_TOKEN` is the shared integration credential and must be managed as a secret.
+`MASAR_INTEGRATION_URL` is the receiving Masar service base URL. The client ID and client secret are used to obtain a cached access token through the Masar Client Credentials endpoint; manage the client secret as a secret.
 
 ## Sending Integration Events
 

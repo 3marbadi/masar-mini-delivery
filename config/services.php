@@ -3,12 +3,15 @@
 return [
 
     'masar' => [
-        'source_system' => 'mini_delivery',
         'base_url' => env('MASAR_INTEGRATION_URL'),
-        'token' => env('MASAR_INTEGRATION_TOKEN'),
-        'endpoint_path' => '/api/integration/events',
+        'client_id' => env('MASAR_INTEGRATION_CLIENT_ID'),
+        'client_secret' => env('MASAR_INTEGRATION_CLIENT_SECRET'),
+        'token_path' => '/api/v1/integration/auth/token',
+        'endpoint_path' => '/api/v1/integration/events',
+        'token_safety_seconds' => (int) env('MASAR_INTEGRATION_TOKEN_SAFETY_SECONDS', 60),
         'timeout' => 10,
         'batch_limit' => 50,
+        'max_attempts' => 5,
     ],
 
     /*

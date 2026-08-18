@@ -61,6 +61,7 @@ class IntegrationPersistenceTest extends TestCase
         $this->assertSame(1, $outbox->order_version);
         $this->assertSame(0, $outbox->attempts);
         $this->assertNull($outbox->last_attempt_at);
+        $this->assertNull($outbox->next_attempt_at);
         $this->assertNull($outbox->sent_at);
         $this->assertNull($outbox->last_error);
         $this->assertSame(['order' => ['external_order_id' => '100']], $outbox->payload);

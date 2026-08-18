@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'status',
     'attempts',
     'last_attempt_at',
+    'next_attempt_at',
     'sent_at',
     'last_error',
 ])]
@@ -44,6 +45,7 @@ class IntegrationOutbox extends Model
             'status' => IntegrationOutboxStatus::class,
             'attempts' => 'integer',
             'last_attempt_at' => 'datetime',
+            'next_attempt_at' => 'datetime',
             'sent_at' => 'datetime',
         ];
     }

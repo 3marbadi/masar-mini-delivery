@@ -2,8 +2,6 @@
 
 namespace App\Services;
 
-use App\Enums\DeliveryOrderResult;
-use App\Enums\DeliveryOrderStatus;
 use App\Enums\IntegrationEventType;
 use App\Enums\IntegrationOutboxStatus;
 use App\Models\DeliveryOrder;
@@ -28,14 +26,10 @@ class IntegrationEventGenerationService
                 $occurredAt,
                 $version,
                 [
-                    'order' => array_merge($this->orderSnapshot($order), [
-                        'status' => DeliveryOrderStatus::Assigned->value,
-                        'assigned_at' => $this->date($occurredAt),
-                    ]),
+                    'order' => $this->orderSnapshot($order),
                     'customer' => $this->customerSnapshot($order),
-                    'representative' => $this->representativeSnapshot($order->representative),
+                    'courier' => $this->courierSnapshot($order->representative),
                     'location' => $this->locationSnapshot($order),
-                    'customer_history' => $this->customerHistory($order),
                 ],
             ),
         );
@@ -53,13 +47,6 @@ class IntegrationEventGenerationService
         DeliveryOrder $order,
         Representative $previousRepresentative,
     ): IntegrationOutbox {
-        $changedFields = [
-            'representative.external_representative_id' => [
-                'old' => (string) $previousRepresentative->getKey(),
-                'new' => (string) $order->representative_id,
-            ],
-        ];
-
         return $this->createEvent(
             $order,
             IntegrationEventType::OrderReassigned,
@@ -69,10 +56,9 @@ class IntegrationEventGenerationService
                 now(),
                 $version,
                 [
-                    'previous_representative' => $this->representativeSnapshot($previousRepresentative),
-                    'new_representative' => $this->representativeSnapshot($order->representative),
-                    'changed_fields' => $changedFields,
-                    'current_snapshot' => $this->currentSnapshot($order),
+                    'external_order_id' => (string) $order->getKey(),
+                    'previous_external_courier_id' => (string) $previousRepresentative->getKey(),
+                    'courier' => $this->courierSnapshot($order->representative),
                 ],
             ),
         );
@@ -83,7 +69,17 @@ class IntegrationEventGenerationService
      */
     public function cancelled(DeliveryOrder $order, array $changedFields): IntegrationOutbox
     {
-        return $this->snapshotEvent($order, IntegrationEventType::OrderCancelled, $changedFields, true);
+        return $this->createEvent(
+            $order,
+            IntegrationEventType::OrderCancelled,
+            fn (string $eventId, int $version): array => $this->envelope(
+                $eventId,
+                IntegrationEventType::OrderCancelled,
+                now(),
+                $version,
+                ['external_order_id' => (string) $order->getKey()],
+            ),
+        );
     }
 
     /**
@@ -93,7 +89,6 @@ class IntegrationEventGenerationService
         DeliveryOrder $order,
         IntegrationEventType $type,
         array $changedFields,
-        bool $includeCancellationState = false,
     ): IntegrationOutbox {
         return $this->createEvent(
             $order,
@@ -104,8 +99,9 @@ class IntegrationEventGenerationService
                 now(),
                 $version,
                 [
+                    'external_order_id' => (string) $order->getKey(),
                     'changed_fields' => $changedFields,
-                    'current_snapshot' => $this->currentSnapshot($order, $includeCancellationState),
+                    'current_snapshot' => $this->currentSnapshot($order),
                 ],
             ),
         );
@@ -157,7 +153,6 @@ class IntegrationEventGenerationService
     ): array {
         return [
             'contract_version' => '1.0',
-            'source_system' => config('services.masar.source_system'),
             'event_id' => $eventId,
             'event_type' => $type->value,
             'occurred_at' => $this->date($occurredAt),
@@ -167,22 +162,12 @@ class IntegrationEventGenerationService
     }
 
     /** @return array<string, mixed> */
-    private function currentSnapshot(DeliveryOrder $order, bool $cancelled = false): array
+    private function currentSnapshot(DeliveryOrder $order): array
     {
-        $orderSnapshot = $this->orderSnapshot($order);
-
-        if ($cancelled) {
-            $orderSnapshot = array_merge($orderSnapshot, [
-                'status' => DeliveryOrderStatus::Cancelled->value,
-                'result' => null,
-                'cancelled_at' => $this->date($order->cancelled_at),
-            ]);
-        }
-
         return [
-            'order' => $orderSnapshot,
+            'order' => $this->orderSnapshot($order),
             'customer' => $this->customerSnapshot($order),
-            'representative' => $this->representativeSnapshot($order->representative),
+            'courier' => $this->courierSnapshot($order->representative),
             'location' => $this->locationSnapshot($order),
         ];
     }
@@ -192,8 +177,7 @@ class IntegrationEventGenerationService
     {
         return [
             'external_order_id' => (string) $order->getKey(),
-            'value' => $order->value,
-            'created_at' => $this->date($order->created_at),
+            'amount' => $order->value,
         ];
     }
 
@@ -208,10 +192,10 @@ class IntegrationEventGenerationService
     }
 
     /** @return array<string, string|null> */
-    private function representativeSnapshot(?Representative $representative): array
+    private function courierSnapshot(?Representative $representative): array
     {
         return [
-            'external_representative_id' => (string) $representative?->getKey(),
+            'external_courier_id' => (string) $representative?->getKey(),
             'name' => $representative?->name,
             'phone' => $representative?->phone,
         ];
@@ -225,31 +209,6 @@ class IntegrationEventGenerationService
             'latitude' => $order->latitude,
             'longitude' => $order->longitude,
         ];
-    }
-
-    /** @return array<int, array<string, string>> */
-    private function customerHistory(DeliveryOrder $order): array
-    {
-        return DeliveryOrder::query()
-            ->where('customer_id', $order->customer_id)
-            ->whereKeyNot($order->getKey())
-            ->where('status', DeliveryOrderStatus::Completed->value)
-            ->whereIn('result', [
-                DeliveryOrderResult::Delivered->value,
-                DeliveryOrderResult::NotDelivered->value,
-            ])
-            ->whereNotNull('representative_id')
-            ->whereNotNull('completed_at')
-            ->orderBy('completed_at')
-            ->orderBy('id')
-            ->get()
-            ->map(fn (DeliveryOrder $historicalOrder): array => [
-                'external_order_id' => (string) $historicalOrder->getKey(),
-                'external_representative_id' => (string) $historicalOrder->representative_id,
-                'result' => $historicalOrder->result->value,
-                'completed_at' => $this->date($historicalOrder->completed_at),
-            ])
-            ->all();
     }
 
     private function date(?Carbon $date): ?string

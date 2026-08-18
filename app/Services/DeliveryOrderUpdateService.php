@@ -11,7 +11,7 @@ class DeliveryOrderUpdateService
     private const FIELDS = ['value', 'location_link', 'latitude', 'longitude'];
 
     private const PATHS = [
-        'value' => 'order.value',
+        'value' => 'order.amount',
         'location_link' => 'location.location_link',
         'latitude' => 'location.latitude',
         'longitude' => 'location.longitude',

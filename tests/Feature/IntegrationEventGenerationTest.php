@@ -40,25 +40,10 @@ class IntegrationEventGenerationTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_first_assignment_creates_v1_pending_event_with_contract_payload_and_raw_history(): void
+    public function test_first_assignment_creates_v1_pending_event_with_contract_payload(): void
     {
         $customer = $this->customer();
-        $historicalRepresentative = $this->representative('Historical', false);
         $representative = $this->representative('Current');
-        $includedDelivered = $this->order($customer, [
-            'representative_id' => $historicalRepresentative->id,
-            'status' => DeliveryOrderStatus::Completed,
-            'result' => DeliveryOrderResult::Delivered,
-            'completed_at' => '2026-08-10 10:00:00',
-        ]);
-        $includedNotDelivered = $this->order($customer, [
-            'representative_id' => $historicalRepresentative->id,
-            'status' => DeliveryOrderStatus::Completed,
-            'result' => DeliveryOrderResult::NotDelivered,
-            'completed_at' => '2026-08-11 10:00:00',
-        ]);
-        $this->order($customer, ['status' => DeliveryOrderStatus::NewOrder]);
-        $this->order($customer, ['status' => DeliveryOrderStatus::Cancelled, 'cancelled_at' => now()]);
         $order = $this->order($customer, [
             'value' => '120.00',
             'location_link' => 'maps.example/order',
@@ -79,14 +64,11 @@ class IntegrationEventGenerationTest extends TestCase
         $this->assertSame(0, $event->attempts);
         $this->assertSame($event->event_id, $payload['event_id']);
         $this->assertSame('1.0', $payload['contract_version']);
-        $this->assertSame('mini_delivery', $payload['source_system']);
-        $this->assertSame('120.00', $payload['data']['order']['value']);
+        $this->assertArrayNotHasKey('source_system', $payload);
+        $this->assertSame('120.00', $payload['data']['order']['amount']);
         $this->assertSame('32.8872000', $payload['data']['location']['latitude']);
-        $this->assertSame((string) $representative->id, $payload['data']['representative']['external_representative_id']);
-        $this->assertSame([
-            (string) $includedDelivered->id,
-            (string) $includedNotDelivered->id,
-        ], array_column($payload['data']['customer_history'], 'external_order_id'));
+        $this->assertSame((string) $representative->id, $payload['data']['courier']['external_courier_id']);
+        $this->assertArrayNotHasKey('customer_history', $payload['data']);
     }
 
     public function test_reassignment_increments_version_and_same_representative_is_no_op(): void
@@ -106,8 +88,8 @@ class IntegrationEventGenerationTest extends TestCase
         $event = $order->integrationOutboxEvents()->where('order_version', 2)->firstOrFail();
 
         $this->assertSame(IntegrationEventType::OrderReassigned, $event->event_type);
-        $this->assertSame((string) $first->id, $event->payload['data']['previous_representative']['external_representative_id']);
-        $this->assertSame((string) $second->id, $event->payload['data']['new_representative']['external_representative_id']);
+        $this->assertSame((string) $first->id, $event->payload['data']['previous_external_courier_id']);
+        $this->assertSame((string) $second->id, $event->payload['data']['courier']['external_courier_id']);
     }
 
     public function test_completion_delivered_is_local_and_does_not_create_event_or_increment_version(): void
@@ -142,8 +124,8 @@ class IntegrationEventGenerationTest extends TestCase
         $event = $cancelled->integrationOutboxEvents()->where('order_version', 2)->firstOrFail();
 
         $this->assertSame(IntegrationEventType::OrderCancelled, $event->event_type);
-        $this->assertSame('cancelled', $event->payload['data']['current_snapshot']['order']['status']);
-        $this->assertNull($event->payload['data']['current_snapshot']['order']['result']);
+        $this->assertSame((string) $assigned->id, $event->payload['data']['external_order_id']);
+        $this->assertSame(['external_order_id'], array_keys($event->payload['data']));
         $this->assertSame($assigned->representative_id, $cancelled->representative_id);
 
         $new = $this->lifecycle->cancel($this->order());
@@ -162,8 +144,8 @@ class IntegrationEventGenerationTest extends TestCase
         $updated = $updates->update($assigned, ['value' => '35.00', 'latitude' => '33.0000000']);
         $event = $updated->integrationOutboxEvents()->where('order_version', 2)->firstOrFail();
 
-        $this->assertSame(['order.value', 'location.latitude'], array_keys($event->payload['data']['changed_fields']));
-        $this->assertSame('35.00', $event->payload['data']['current_snapshot']['order']['value']);
+        $this->assertSame(['order.amount', 'location.latitude'], array_keys($event->payload['data']['changed_fields']));
+        $this->assertSame('35.00', $event->payload['data']['current_snapshot']['order']['amount']);
         $updates->update($updated, ['value' => '35.00', 'latitude' => '33.0000000']);
         $this->assertSame(2, $updated->integrationState()->value('current_version'));
         $this->assertSame(2, $updated->integrationOutboxEvents()->count());

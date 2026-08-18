@@ -12,6 +12,7 @@ use App\Models\IntegrationOutbox;
 use App\Models\OrderIntegrationState;
 use App\Models\Representative;
 use App\Services\IntegrationOutboxSender;
+use App\Services\MasarAccessTokenProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -34,11 +35,15 @@ class IntegrationOutboxSenderTest extends TestCase
         Carbon::setTestNow('2026-08-14 14:00:00');
         config()->set([
             'services.masar.base_url' => 'https://masar.test/base',
-            'services.masar.token' => 'test-secret-token',
-            'services.masar.endpoint_path' => '/api/integration/events',
+            'services.masar.client_id' => 'mini-delivery',
+            'services.masar.client_secret' => 'test-client-secret',
+            'services.masar.endpoint_path' => '/api/v1/integration/events',
             'services.masar.timeout' => 10,
             'services.masar.batch_limit' => 50,
         ]);
+        $tokens = $this->mock(MasarAccessTokenProvider::class);
+        $tokens->shouldReceive('token')->zeroOrMoreTimes()->andReturn('test-secret-token');
+        $tokens->shouldReceive('invalidate')->zeroOrMoreTimes();
         $this->sender = app(IntegrationOutboxSender::class);
     }
 
@@ -112,7 +117,7 @@ class IntegrationOutboxSenderTest extends TestCase
 
     public function test_non_retryable_http_statuses_fail_without_exposing_token(): void
     {
-        foreach ([400, 401, 404, 409, 422] as $status) {
+        foreach ([400, 403, 404, 409, 422] as $status) {
             $event = $this->outbox();
             Http::fake(['*' => Http::response([
                 'error' => ['message' => 'test-secret-token'],
@@ -125,6 +130,34 @@ class IntegrationOutboxSenderTest extends TestCase
             $this->assertNull($event->sent_at);
             $this->assertStringNotContainsString('test-secret-token', $event->last_error);
         }
+    }
+
+    public function test_unauthorized_response_refreshes_token_once_and_retries_the_event(): void
+    {
+        $event = $this->outbox();
+        Http::fakeSequence()
+            ->push([], 401)
+            ->push([
+                'success' => true,
+                'event_id' => $event->event_id,
+                'status' => 'processed',
+            ]);
+
+        $this->assertSame(IntegrationSendResult::Sent, $this->sender->send($event));
+        $this->assertSame(2, $event->fresh()->attempts);
+        Http::assertSentCount(2);
+    }
+
+    public function test_retryable_failure_becomes_permanent_at_max_attempts(): void
+    {
+        $event = $this->outbox();
+        $event->update(['attempts' => 4]);
+        Http::fake(['*' => Http::response([], 503)]);
+
+        $this->assertSame(IntegrationSendResult::Failed, $this->sender->send($event));
+        $this->assertSame(5, $event->fresh()->attempts);
+        $this->assertSame(IntegrationOutboxStatus::Failed, $event->fresh()->status);
+        $this->assertNull($event->fresh()->next_attempt_at);
     }
 
     public function test_invalid_success_status_and_event_id_mismatch_are_protocol_failures(): void
@@ -186,6 +219,23 @@ class IntegrationOutboxSenderTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_future_retry_is_not_eligible_and_manual_retry_resets_a_failed_event(): void
+    {
+        $future = $this->outbox();
+        $future->update(['next_attempt_at' => now()->addMinute()]);
+        $failed = $this->outbox(status: IntegrationOutboxStatus::Failed);
+        $failed->update(['attempts' => 5, 'last_error' => 'HTTP 403 Forbidden']);
+
+        $this->assertNotContains($future->id, $this->sender->eligibleBatch()->pluck('id')->all());
+        $this->artisan('integration:retry', ['event_id' => $failed->event_id])->assertSuccessful();
+
+        $failed->refresh();
+        $this->assertSame(IntegrationOutboxStatus::Pending, $failed->status);
+        $this->assertSame(0, $failed->attempts);
+        $this->assertNull($failed->last_error);
+        $this->assertTrue($failed->next_attempt_at->equalTo(now()));
+    }
+
     public function test_failure_for_one_order_does_not_block_another_order(): void
     {
         $first = $this->outbox();
@@ -230,7 +280,7 @@ class IntegrationOutboxSenderTest extends TestCase
         $this->sender->send($event);
 
         Http::assertSent(function (Request $request) use ($storedPayload): bool {
-            return $request->url() === 'https://masar.test/base/api/integration/events'
+            return $request->url() === 'https://masar.test/base/api/v1/integration/events'
                 && $request->hasHeader('Authorization', 'Bearer test-secret-token')
                 && $request->hasHeader('Accept', 'application/json')
                 && $request->data() == $storedPayload;
@@ -249,6 +299,7 @@ class IntegrationOutboxSenderTest extends TestCase
             ]);
 
         $this->sender->send($event);
+        Carbon::setTestNow(now()->addMinute());
         $this->sender->send($event->fresh());
 
         $this->assertSame(2, $event->fresh()->attempts);
@@ -283,12 +334,11 @@ class IntegrationOutboxSenderTest extends TestCase
         $eventId = (string) Str::uuid();
         $payload = [
             'contract_version' => '1.0',
-            'source_system' => 'mini_delivery',
             'event_id' => $eventId,
             'event_type' => $type->value,
             'occurred_at' => '2026-08-14T14:00:00Z',
             'order_version' => $version,
-            'data' => ['snapshot' => 'stored-'.$eventId],
+            'data' => ['external_order_id' => (string) $order->id],
         ];
 
         return IntegrationOutbox::create([
