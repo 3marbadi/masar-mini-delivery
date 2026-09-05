@@ -29,6 +29,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'confirmed_at',
     'delivery_status',
     'status_reason',
+    'masar_status_version',
     'location_completed_at',
     'status',
     'result',
@@ -104,6 +105,9 @@ class DeliveryOrder extends Model
             'available_until' => 'datetime',
             'confirmed_at' => 'datetime',
             'delivery_status' => DeliveryStatus::class,
+            // The last Masar-owned delivery-status version applied to this
+            // order (CONTRACT §3.21.11). Written only by the Masar receiver.
+            'masar_status_version' => 'integer',
             'location_completed_at' => 'datetime',
             'status' => DeliveryOrderStatus::class,
             'result' => DeliveryOrderResult::class,
