@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\IntegrationEventType;
 use App\Enums\IntegrationOutboxStatus;
+use App\Exceptions\MissingOrderRecipientException;
 use App\Models\DeliveryOrder;
 use App\Models\IntegrationOutbox;
 use App\Models\OrderIntegrationState;
@@ -181,13 +182,50 @@ class IntegrationEventGenerationService
         ];
     }
 
-    /** @return array<string, string> */
+    /**
+     * Who receives this order, and the customer it is filed under.
+     *
+     * The identity stays the shared customer's — that is what
+     * `external_customer_id` means, and Masar resolves its own customer row by
+     * it. Identity is not recipient data, and this is the one place the two
+     * legitimately sit side by side.
+     *
+     * The name and the number come from the order's own recipient snapshot
+     * (§13.14, D7) and **from nowhere else**. Since the data channel opened they
+     * can differ from the profile: a courier corrected them on this order, Masar
+     * announced the correction, and it was applied here to this order alone.
+     *
+     * **There is deliberately no fallback to `$order->customer`.** It would be
+     * the natural-looking repair for a null snapshot and it is exactly what D7
+     * forbids, for a reason that outlives the null it would paper over: reading
+     * the profile here re-couples a per-order value to a row every order of that
+     * person shares. One order's announcement would then carry a name that
+     * belongs to another order's history — and, worse, would carry the profile's
+     * name back to Masar, where it is applied over the very correction Masar's
+     * own courier made. A fallback is not a safety net here; it is the loop.
+     *
+     * A null snapshot is therefore an error and not a case to handle. Every row
+     * that existed when the columns were added was backfilled and every order
+     * since carries a recipient, so this is unreachable in ordinary operation;
+     * if it is reached, failing here fails inside the caller's transaction, and
+     * the local change rolls back with it. The alternative is an envelope Masar
+     * refuses for a `customer.name` its own contract requires — discovered
+     * later, in the outbox, by nobody.
+     *
+     * @return array<string, string>
+     *
+     * @throws MissingOrderRecipientException when the order carries no recipient of its own
+     */
     private function customerSnapshot(DeliveryOrder $order): array
     {
+        if ($order->recipient_name === null || $order->recipient_phone === null) {
+            throw MissingOrderRecipientException::for($order->getKey());
+        }
+
         return [
             'external_customer_id' => (string) $order->customer->getKey(),
-            'name' => $order->customer->name,
-            'phone' => $order->customer->phone,
+            'name' => $order->recipient_name,
+            'phone' => $order->recipient_phone,
         ];
     }
 

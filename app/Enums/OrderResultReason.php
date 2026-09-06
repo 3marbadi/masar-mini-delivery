@@ -32,6 +32,23 @@ enum OrderResultReason: string
     case PriceMismatch = 'price_mismatch';
     case IncorrectCustomerOrOrderData = 'incorrect_customer_or_order_data';
 
+    /**
+     * The two codes Masar's follow-up timer produces (CONTRACT §3.14.1, §13.6 —
+     * v5.2).
+     *
+     * Accepted here because this system is the *receiver* of Masar's status
+     * announcements and must be able to store what Masar legitimately sends
+     * (§3.21.5). Acceptance is not selection: neither code belongs to this
+     * company's own result vocabulary, and nothing here offers them as a choice.
+     *
+     * `follow_up_timer_opened` arrives with `postponed` — Masar's courier opened
+     * a twenty-four-hour follow-up timer — and `follow_up_timer_expired` with
+     * `returned`, when that timer ran out. The pairing is checked in both
+     * directions like every other reason's.
+     */
+    case FollowUpTimerOpened = 'follow_up_timer_opened';
+    case FollowUpTimerExpired = 'follow_up_timer_expired';
+
     /** The result this reason belongs to — postponement or return, never both. */
     public function result(): DeliveryStatus
     {
@@ -40,7 +57,8 @@ enum OrderResultReason: string
             self::CustomerCurrentlyUnavailable,
             self::CustomerUnreachable,
             self::CustomerAbsent,
-            self::LocationOrAddressIssue => DeliveryStatus::Postponed,
+            self::LocationOrAddressIssue,
+            self::FollowUpTimerOpened => DeliveryStatus::Postponed,
             default => DeliveryStatus::Returned,
         };
     }

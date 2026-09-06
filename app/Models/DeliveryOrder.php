@@ -15,10 +15,17 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable([
     'customer_id',
+    // The order's own recipient (§13.14, D7). Corrected by Masar's couriers on
+    // this order alone, and never read from or written to the shared customer
+    // profile — see the migration that added them.
+    'recipient_name',
+    'recipient_phone',
+    'recipient_alternate_phone',
     'representative_id',
     'location_id',
     'tour_id',
     'value',
+    'delivery_payer',
     'location_link',
     'latitude',
     'longitude',
@@ -30,6 +37,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'delivery_status',
     'status_reason',
     'masar_status_version',
+    'masar_data_version',
     'location_completed_at',
     'status',
     'result',
@@ -38,6 +46,49 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 ])]
 class DeliveryOrder extends Model
 {
+    /**
+     * Seed the recipient snapshot at creation (CONTRACT §13.14 — v5.1, D7).
+     *
+     * The counterpart of the backfill that filled every row already in the
+     * table: the backfill answered "what about the past", and this answers "what
+     * about the next one". Between the two, every order has a recipient of its
+     * own, which is what lets every *read* of a recipient be a read of this
+     * order's snapshot and nothing else — no coalesce, no fallback, no chance of
+     * one order's screen showing a value a sibling's history explains.
+     *
+     * Seeding is not the fallback D7 forbids, and the difference is the moment it
+     * happens. This copies once, at insert, and the order owns the value from
+     * then on: a later change to the shared profile does not reach it, and a
+     * courier's correction to it does not reach the profile. A read-time
+     * coalesce would re-establish exactly the coupling that copy removes.
+     *
+     * It runs on the model rather than in the one admin page that creates
+     * orders, because the guarantee has to hold for *every* creation path, and
+     * a page is a path someone will one day add a second of.
+     *
+     * Explicit values win: a caller that already knows the recipient — an
+     * importer, a fixture reproducing a corrected order — is not overwritten.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $order): void {
+            if ($order->recipient_name !== null && $order->recipient_phone !== null) {
+                return;
+            }
+
+            $customer = Customer::query()->find($order->customer_id);
+
+            if ($customer === null) {
+                // The foreign key will refuse this insert in a moment and say so
+                // far better than a guess here would.
+                return;
+            }
+
+            $order->recipient_name ??= $customer->name;
+            $order->recipient_phone ??= $customer->phone;
+        });
+    }
+
     /**
      * @return BelongsTo<Customer, $this>
      */
