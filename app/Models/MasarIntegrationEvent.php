@@ -23,7 +23,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable([
     'masar_integration_client_id', 'request_id', 'event_id', 'event_type',
     'external_order_id', 'delivery_order_id', 'payload_hash', 'status_version',
-    'data_version', 'base_order_version',
+    'data_version', 'base_order_version', 'location_version', 'masar_note_id',
     'result', 'http_status', 'error_code', 'error_message',
     'received_at', 'processed_at',
 ])]
@@ -51,6 +51,11 @@ class MasarIntegrationEvent extends Model
             // coerced to zero: null says «this channel did not speak».
             'data_version' => 'integer',
             'base_order_version' => 'integer',
+            'location_version' => 'integer',
+            // An identity, not a version (§13.16.2). Cast for the same reason
+            // the others are — so a comparison in a test or a log reads as a
+            // number — and never compared for recency anywhere.
+            'masar_note_id' => 'integer',
             'http_status' => 'integer',
             'received_at' => 'datetime',
             'processed_at' => 'datetime',

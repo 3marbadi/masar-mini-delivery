@@ -38,6 +38,10 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'status_reason',
     'masar_status_version',
     'masar_data_version',
+    'masar_location_version',
+    'location_changed_at',
+    'location_change_source',
+    'location_change_event_id',
     'location_completed_at',
     'status',
     'result',
@@ -159,6 +163,16 @@ class DeliveryOrder extends Model
             // The last Masar-owned delivery-status version applied to this
             // order (CONTRACT §3.21.11). Written only by the Masar receiver.
             'masar_status_version' => 'integer',
+            // The last Masar-owned location version applied to this order
+            // (CONTRACT §13.17.3). Written only by the Masar location receiver,
+            // and independent of the two versions beside it (§13.12).
+            'masar_location_version' => 'integer',
+            // The arbiter of which side's location change happened later
+            // (CONTRACT §13.17.5, D13). Distinct from `location_completed_at`
+            // beside it: that is Masar's field fact and moves only for a
+            // courier's completion, while this moves for a location change from
+            // either origin — and from nothing else.
+            'location_changed_at' => 'datetime',
             'location_completed_at' => 'datetime',
             'status' => DeliveryOrderStatus::class,
             'result' => DeliveryOrderResult::class,

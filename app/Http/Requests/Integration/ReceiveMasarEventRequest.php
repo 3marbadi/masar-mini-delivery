@@ -4,7 +4,10 @@ namespace App\Http\Requests\Integration;
 
 use App\Enums\DeliveryStatus;
 use App\Enums\OrderResultReason;
+use App\Services\Integration\LocationChangeStamp;
 use App\Services\Integration\MasarDataEnvelope;
+use App\Services\Integration\MasarLocationEnvelope;
+use App\Services\Integration\MasarNoteEnvelope;
 use App\Services\Integration\MasarStatusEnvelope;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -20,12 +23,13 @@ use Illuminate\Validation\Rule;
  * processor — putting the order into an `exists:` rule would answer "unknown
  * order" as a `422` where the contract gives it a `404` with its own code.
  *
- * **Two event types now, and the body is read by type rather than by union.**
- * §13.8.1 fixes each `data` block separately and forbids one carrying the
- * other's fields, so validating against the sum of both would accept a status
- * event with a `changed_fields` in it — an envelope neither contract describes.
- * The common envelope is checked once and each type's `data` block is then
- * checked against its own rules and nothing else.
+ * **Four event types now, and the body is read by type rather than by union.**
+ * §13.8.1, §13.16.1 and §13.17.1 each fix a `data` block separately and forbid
+ * one carrying another's fields, so validating against the sum of all four would
+ * accept a status event with a `changed_fields` in it, or a note event carrying
+ * a location — envelopes no contract describes. The common envelope is checked
+ * once and each type's `data` block is then checked against its own rules and
+ * nothing else.
  *
  * The status reason pairing is checked rather than trusted, because §3.21.5
  * binds both ends: «القسمةُ ملزمةٌ في الطرفين لا في المرسِل وحده». A
@@ -84,6 +88,8 @@ class ReceiveMasarEventRequest extends FormRequest
 
         return $envelope + match ($this->input('event_type')) {
             MasarDataEnvelope::EVENT_TYPE => $this->dataRules(),
+            MasarNoteEnvelope::EVENT_TYPE => $this->noteRules(),
+            MasarLocationEnvelope::EVENT_TYPE => $this->locationRules(),
             default => $this->statusRules(),
         };
     }
@@ -144,6 +150,78 @@ class ReceiveMasarEventRequest extends FormRequest
         ];
     }
 
+    /**
+     * §13.16.1 — the note channel.
+     *
+     * Four fields and no version, and the absence is the contract rather than an
+     * omission (§13.16.2). `note_id` is the identity: `integer` and `min:1`
+     * because it is a key at the source, and the ceiling is stated for the same
+     * reason the version ceilings are — the column is BIGINT and a value it
+     * cannot hold must be refused at the edge rather than truncated at the write.
+     *
+     * `content` is refused when blank, matching §13.5 at the source: a note is
+     * never written empty there, so an empty one arriving here is a transport or
+     * contract fault rather than data. The store refuses it too, by CHECK.
+     *
+     * @return array<string, mixed>
+     */
+    private function noteRules(): array
+    {
+        return [
+            'data.note_id' => ['required', 'integer', 'min:1', 'max:9223372036854775807'],
+            // No `max` on the text: §13.5 puts no ceiling on a note's length and
+            // the column is TEXT. Refusing at an invented limit would drop a
+            // courier's words for a rule nobody agreed to.
+            'data.content' => ['required', 'string'],
+            'data.representative_id' => ['required', 'integer', 'min:1', 'max:9223372036854775807'],
+            'data.created_at' => ['required', 'date_format:Y-m-d\TH:i:sP,Y-m-d\TH:i:s\Z'],
+        ];
+    }
+
+    /**
+     * §13.17.1 — the location channel.
+     *
+     * `location_version` is Masar's own sequence, used here for replay and
+     * duplicate detection within its stream — not for deciding which side holds
+     * the newer location. That is `location_changed_at`, the instant the change
+     * committed at its origin (§13.17.5, D13).
+     *
+     * There is no `base_order_version`. It was this channel's arbiter while the
+     * rule was conflict detection, and D13 replaced it: a precondition able to
+     * refuse a genuinely newer change — because *our* unrelated sequence had
+     * moved — is not last-write-wins. The data channel keeps its own, unchanged.
+     *
+     * The coordinates are validated as **strings**, not numbers, and that is
+     * §13.17.1 rather than a preference. Both ends store DECIMAL(10,7), and a
+     * `numeric` rule would let a JSON float through to a column that then rounds
+     * it — reintroducing exactly the representation error the string form exists
+     * to avoid. The regex fixes the shape: an optional sign, digits, a point,
+     * and seven places, which is what Masar normalises to before sending.
+     *
+     * The ranges are then checked in `withValidator`, on the parsed value, so a
+     * well-formed but impossible coordinate is refused too.
+     *
+     * @return array<string, mixed>
+     */
+    private function locationRules(): array
+    {
+        return [
+            'data.location_version' => ['required', 'integer', 'min:1', 'max:9223372036854775807'],
+            // §13.17.5, D13 — the arbiter. Required, because without it there is
+            // no way to tell a newer change from an older one and the receiver
+            // would be reduced to trusting arrival order.
+            'data.location_changed_at' => ['required', 'date_format:Y-m-d\TH:i:sP,Y-m-d\TH:i:s\Z'],
+            // Always `masar` on this channel — Masar is its only sender — but
+            // carried and checked rather than assumed, because it is a term of
+            // the tie-break and a receiver that filled it in itself would be one
+            // refactor from filling it in wrongly.
+            'data.location_change_source' => ['required', Rule::in([LocationChangeStamp::SOURCE_MASAR])],
+            'data.latitude' => ['required', 'string', 'regex:/^-?\d{1,3}\.\d{7}$/'],
+            'data.longitude' => ['required', 'string', 'regex:/^-?\d{1,3}\.\d{7}$/'],
+            'data.location_completed_at' => ['required', 'date_format:Y-m-d\TH:i:sP,Y-m-d\TH:i:s\Z'],
+        ];
+    }
+
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
@@ -158,13 +236,12 @@ class ReceiveMasarEventRequest extends FormRequest
                 return;
             }
 
-            if ($this->input('event_type') === MasarDataEnvelope::EVENT_TYPE) {
-                $this->validateChangedFields($validator);
-
-                return;
-            }
-
-            $this->validateStatusPairing($validator);
+            match ($this->input('event_type')) {
+                MasarDataEnvelope::EVENT_TYPE => $this->validateChangedFields($validator),
+                MasarNoteEnvelope::EVENT_TYPE => $this->validateNoteContent($validator),
+                MasarLocationEnvelope::EVENT_TYPE => $this->validateCoordinateRanges($validator),
+                default => $this->validateStatusPairing($validator),
+            };
         });
     }
 
@@ -172,9 +249,55 @@ class ReceiveMasarEventRequest extends FormRequest
     {
         return in_array(
             $this->input('event_type'),
-            [MasarStatusEnvelope::EVENT_TYPE, MasarDataEnvelope::EVENT_TYPE],
+            [
+                MasarStatusEnvelope::EVENT_TYPE,
+                MasarDataEnvelope::EVENT_TYPE,
+                MasarNoteEnvelope::EVENT_TYPE,
+                MasarLocationEnvelope::EVENT_TYPE,
+            ],
             true,
         );
+    }
+
+    /**
+     * §13.5, §13.16.1 — a note is never blank at the source.
+     *
+     * Checked after the `string` rule has passed, and separately from it,
+     * because `required` alone lets `"   "` through: a string of spaces is
+     * present and non-empty by PHP's reckoning and is still not a note.
+     */
+    private function validateNoteContent(Validator $validator): void
+    {
+        $content = $this->input('data.content');
+
+        if (is_string($content) && trim($content) === '') {
+            $validator->errors()->add('data.content', 'A note cannot be blank.');
+        }
+    }
+
+    /**
+     * §3.13, §13.17.1 — the two ranges, on the parsed value.
+     *
+     * The regex in the rules fixes the *shape*; this fixes the *value*. Both are
+     * needed: `100.0000000` is a well-formed seven-place decimal and is not a
+     * latitude, and half a location is not a location — but the pairing is
+     * already guaranteed here, because both fields are `required`.
+     */
+    private function validateCoordinateRanges(Validator $validator): void
+    {
+        foreach ([['data.latitude', 90.0], ['data.longitude', 180.0]] as [$key, $limit]) {
+            $value = $this->input($key);
+
+            if (! is_string($value) || ! preg_match('/^-?\d{1,3}\.\d{7}$/', $value)) {
+                // The rule above already reported this; saying it twice would
+                // put two messages on one field for one fault.
+                continue;
+            }
+
+            if (abs((float) $value) > $limit) {
+                $validator->errors()->add($key, "This coordinate is outside the range -{$limit} to {$limit}.");
+            }
+        }
     }
 
     /**

@@ -38,10 +38,15 @@ class IntegrationEventGenerationService
 
     /**
      * @param  array<string, array{old: mixed, new: mixed}>  $changedFields
+     * @param  Carbon|null  $occurredAt  the instant the change committed, when the caller has
+     *                                   already taken it. Since D13 a location change is stamped
+     *                                   on the order with the same instant this event carries
+     *                                   (§13.17.8), and Masar compares the two — so they must be
+     *                                   one moment rather than two calls to now() a second apart.
      */
-    public function updated(DeliveryOrder $order, array $changedFields): IntegrationOutbox
+    public function updated(DeliveryOrder $order, array $changedFields, ?Carbon $occurredAt = null): IntegrationOutbox
     {
-        return $this->snapshotEvent($order, IntegrationEventType::OrderUpdated, $changedFields);
+        return $this->snapshotEvent($order, IntegrationEventType::OrderUpdated, $changedFields, $occurredAt);
     }
 
     public function reassigned(
@@ -90,14 +95,22 @@ class IntegrationEventGenerationService
         DeliveryOrder $order,
         IntegrationEventType $type,
         array $changedFields,
+        ?Carbon $occurredAt = null,
     ): IntegrationOutbox {
+        // Taken once here when the caller did not supply it, so the closure
+        // below cannot take a second reading. `occurred_at` is the business
+        // instant of this change and is frozen into the stored payload — the
+        // sender re-posts that payload verbatim, so no retry ever refreshes it
+        // (§13.17.8).
+        $occurredAt ??= now();
+
         return $this->createEvent(
             $order,
             $type,
             fn (string $eventId, int $version): array => $this->envelope(
                 $eventId,
                 $type,
-                now(),
+                $occurredAt,
                 $version,
                 [
                     'external_order_id' => (string) $order->getKey(),
