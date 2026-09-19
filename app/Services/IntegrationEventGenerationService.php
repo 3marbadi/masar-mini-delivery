@@ -14,6 +14,17 @@ use Illuminate\Support\Str;
 
 class IntegrationEventGenerationService
 {
+    /**
+     * The reception rate on the customer snapshot is read from the service
+     * that already owns the calculation, never recomputed here. This side is
+     * its only source of truth — Masar receives the finished value and passes
+     * it through — so a second expression for it anywhere would be a second
+     * source, which is the one thing the field must not have.
+     */
+    public function __construct(
+        private CustomerHistoryService $history,
+    ) {}
+
     public function assigned(DeliveryOrder $order): IntegrationOutbox
     {
         $occurredAt = now();
@@ -225,7 +236,21 @@ class IntegrationEventGenerationService
      * refuses for a `customer.name` its own contract requires — discovered
      * later, in the outbox, by nobody.
      *
-     * @return array<string, string>
+     * `reception_rate` is the one value here that describes the *customer*
+     * rather than this order's recipient, and it sits beside them for the same
+     * reason `external_customer_id` does: it is filed under the shared profile,
+     * and this is where identity legitimately meets recipient data. It is the
+     * company's own figure, taken whole from CustomerHistoryService — the
+     * delivery company is the source of truth for it and Masar only relays it,
+     * so it is read and not derived, here or downstream.
+     *
+     * `null` is a value and not a gap: it says this customer has no completed
+     * delivery history to produce a rate from. It is emphatically not `0`,
+     * which says the opposite — there is history, and none of it was received.
+     * The key is therefore always present, so the two stay distinguishable on
+     * the wire instead of collapsing into one absent field.
+     *
+     * @return array<string, string|float|null>
      *
      * @throws MissingOrderRecipientException when the order carries no recipient of its own
      */
@@ -235,10 +260,13 @@ class IntegrationEventGenerationService
             throw MissingOrderRecipientException::for($order->getKey());
         }
 
+        $customer = $order->customer;
+
         return [
-            'external_customer_id' => (string) $order->customer->getKey(),
+            'external_customer_id' => (string) $customer->getKey(),
             'name' => $order->recipient_name,
             'phone' => $order->recipient_phone,
+            'reception_rate' => $this->history->getCompanyReceptionSummary($customer)['reception_rate'],
         ];
     }
 

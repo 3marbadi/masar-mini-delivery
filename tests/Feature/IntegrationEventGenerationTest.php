@@ -11,6 +11,7 @@ use App\Models\DeliveryOrder;
 use App\Models\IntegrationOutbox;
 use App\Models\OrderIntegrationState;
 use App\Models\Representative;
+use App\Services\CustomerHistoryService;
 use App\Services\CustomerUpdateService;
 use App\Services\DeliveryOrderLifecycleService;
 use App\Services\DeliveryOrderUpdateService;
@@ -69,6 +70,9 @@ class IntegrationEventGenerationTest extends TestCase
         $this->assertSame('32.8872000', $payload['data']['location']['latitude']);
         $this->assertSame((string) $representative->id, $payload['data']['courier']['external_courier_id']);
         $this->assertArrayNotHasKey('customer_history', $payload['data']);
+        // The rate travels as a finished figure, never as the raw history it
+        // was made from. Both halves of that sentence are assertions here.
+        $this->assertArrayHasKey('reception_rate', $payload['data']['customer']);
     }
 
     public function test_reassignment_increments_version_and_same_representative_is_no_op(): void
@@ -283,6 +287,156 @@ class IntegrationEventGenerationTest extends TestCase
         $this->assertNull($order->fresh()->representative_id);
         $this->assertDatabaseCount('order_integration_states', 0);
         $this->assertDatabaseCount('integration_outbox', 0);
+    }
+
+    public function test_assigned_carries_the_company_reception_rate_and_not_the_representative_one(): void
+    {
+        $customer = $this->customer();
+        $assignee = $this->representative('Assignee');
+        $other = $this->representative('Other');
+
+        // The assignee's own record is deliberately worse than the company's,
+        // so a payload built from the representative summary would read 50.0
+        // and this assertion would catch it.
+        $this->completed($customer, delivered: 1, notDelivered: 1, representative: $assignee);
+        $this->completed($customer, delivered: 2, notDelivered: 0, representative: $other);
+
+        $rate = $this->assignedCustomerSnapshot($this->order($customer), $assignee)['reception_rate'];
+
+        // 3 delivered of 4 completed, company-wide.
+        $this->assertWireRate(75, $rate);
+        $this->assertWireRate(
+            app(CustomerHistoryService::class)->getCompanyReceptionSummary($customer)['reception_rate'],
+            $rate,
+        );
+        $this->assertNotEquals(
+            app(CustomerHistoryService::class)
+                ->getRepresentativeReceptionSummary($customer, $assignee)['reception_rate'],
+            $rate,
+        );
+    }
+
+    public function test_assigned_reception_rate_preserves_the_exact_decimal_the_company_computed(): void
+    {
+        $customer = $this->customer();
+        $this->completed($customer, delivered: 33, notDelivered: 7);
+
+        $this->assertWireRate(82.5, $this->assignedCustomerSnapshot($this->order($customer))['reception_rate']);
+
+        $twoThirds = $this->customer();
+        $this->completed($twoThirds, delivered: 2, notDelivered: 1);
+
+        // 66.67 and not 66, 67 or "66.67": the decimal survives the wire whole,
+        // and assertWireRate refuses a string carrying it.
+        $this->assertWireRate(66.67, $this->assignedCustomerSnapshot($this->order($twoThirds))['reception_rate']);
+    }
+
+    public function test_assigned_reception_rate_keeps_zero_and_one_hundred_as_real_values(): void
+    {
+        $none = $this->customer();
+        $this->completed($none, delivered: 0, notDelivered: 2);
+
+        $all = $this->customer();
+        $this->completed($all, delivered: 2, notDelivered: 0);
+
+        $noneRate = $this->assignedCustomerSnapshot($this->order($none))['reception_rate'];
+
+        // Zero is a fact about a customer who has history, so it must not be
+        // reported the way "no history at all" is.
+        $this->assertWireRate(0, $noneRate);
+        $this->assertNotNull($noneRate);
+
+        $this->assertWireRate(100, $this->assignedCustomerSnapshot($this->order($all))['reception_rate']);
+    }
+
+    public function test_assigned_reception_rate_is_a_present_null_when_there_is_no_completed_history(): void
+    {
+        $customer = $this->customer();
+        // Neither of these can produce a rate: one is unfinished, and a
+        // cancellation is not a failed reception.
+        $this->order($customer, ['status' => DeliveryOrderStatus::NewOrder]);
+        $this->order($customer, ['status' => DeliveryOrderStatus::Cancelled]);
+
+        $snapshot = $this->assignedCustomerSnapshot($this->order($customer));
+
+        // Present and null, not absent: the key's presence is what keeps
+        // "unknown" distinguishable from 0 on the wire.
+        $this->assertArrayHasKey('reception_rate', $snapshot);
+        $this->assertNull($snapshot['reception_rate']);
+    }
+
+    public function test_updated_carries_the_reception_rate_inside_the_current_snapshot(): void
+    {
+        $customer = $this->customer();
+        $this->completed($customer, delivered: 2, notDelivered: 1);
+
+        $assigned = $this->lifecycle->assignRepresentative(
+            $this->order($customer, ['value' => '120.00', 'latitude' => '32.8872000']),
+            $this->representative(),
+        );
+        $updated = app(DeliveryOrderUpdateService::class)->update($assigned, ['value' => '35.00']);
+
+        $snapshot = $updated->integrationOutboxEvents()
+            ->where('order_version', 2)
+            ->firstOrFail()
+            ->payload['data']['current_snapshot'];
+
+        $this->assertWireRate(66.67, $snapshot['customer']['reception_rate']);
+
+        // Additive only — the rest of the snapshot is untouched.
+        $this->assertSame((string) $customer->id, $snapshot['customer']['external_customer_id']);
+        $this->assertSame($assigned->recipient_name, $snapshot['customer']['name']);
+        $this->assertSame($assigned->recipient_phone, $snapshot['customer']['phone']);
+        $this->assertSame('35.00', $snapshot['order']['amount']);
+        $this->assertSame('32.8872000', $snapshot['location']['latitude']);
+        $this->assertArrayNotHasKey('customer_history', $snapshot);
+    }
+
+    /**
+     * A rate as it actually appears on the wire.
+     *
+     * JSON has one number type, and PHP spends it accordingly: a whole rate is
+     * encoded `100` and decodes back as int, a fractional one is encoded
+     * `66.67` and decodes as float. Both are the same kind of thing to any
+     * reader of the payload, so the assertion is about the number and not
+     * about which PHP type carried it — while still refusing a string, which
+     * would be a real contract break, and refusing null, which means something
+     * else entirely.
+     */
+    private function assertWireRate(int|float $expected, mixed $actual): void
+    {
+        $this->assertIsNotString($actual);
+        $this->assertNotNull($actual);
+        $this->assertSame((float) $expected, (float) $actual);
+    }
+
+    /** @return array<string, mixed> the customer portion of this order's `order.assigned` payload */
+    private function assignedCustomerSnapshot(DeliveryOrder $order, ?Representative $representative = null): array
+    {
+        $this->lifecycle->assignRepresentative($order, $representative ?? $this->representative());
+
+        return IntegrationOutbox::query()
+            ->where('delivery_order_id', $order->getKey())
+            ->where('event_type', IntegrationEventType::OrderAssigned)
+            ->firstOrFail()
+            ->payload['data']['customer'];
+    }
+
+    private function completed(
+        Customer $customer,
+        int $delivered,
+        int $notDelivered,
+        ?Representative $representative = null,
+    ): void {
+        foreach ([[DeliveryOrderResult::Delivered, $delivered], [DeliveryOrderResult::NotDelivered, $notDelivered]] as [$result, $count]) {
+            for ($i = 0; $i < $count; $i++) {
+                $this->order($customer, [
+                    'representative_id' => $representative?->id,
+                    'status' => DeliveryOrderStatus::Completed,
+                    'result' => $result,
+                ]);
+            }
+        }
     }
 
     /** @param array<string, mixed> $attributes */

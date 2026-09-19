@@ -8,7 +8,7 @@ Direction: Mini Delivery → Masar only
 
 Mini Delivery is the source of external operational input and previous delivery-history facts. Masar consumes those facts and owns the current delivery state during its tour, readiness analysis, route generation, scoring, route re-evaluation, and change-impact classification.
 
-V1 uses one authenticated event-ingestion endpoint with four explicit order event types. Events contain external identifiers, a per-order version, a current snapshot, and explicit old/new field changes where applicable. Raw completed delivery history is authoritative; calculated reception percentages are not transmitted in V1.
+V1 uses one authenticated event-ingestion endpoint with four explicit order event types. Events contain external identifiers, a per-order version, a current snapshot, and explicit old/new field changes where applicable. The customer's reception rate is computed by Mini Delivery and transmitted as a finished value; Masar never recomputes it. Raw completed delivery history is NOT transmitted in V1.
 
 Mini Delivery sends every supported relevant change without deciding whether it affects a route and without assigning an impact classification.
 
@@ -61,6 +61,7 @@ V1 does not define Masar-to-Mini-Delivery state synchronization.
 | Order assignment | Mini Delivery |
 | External cancellation | Mini Delivery |
 | Historical completed-order result | Mini Delivery |
+| Customer reception rate | Mini Delivery |
 | Current order status during a Masar tour | Masar |
 | Current delivery completion during a Masar tour | Masar |
 | Customer readiness | Masar |
@@ -70,7 +71,7 @@ V1 does not define Masar-to-Mini-Delivery state synchronization.
 | Route-impact classification | Masar |
 | Proposed-route acceptance/rejection | Masar |
 
-The phrase “historical completed-order result” means a previous order fact used for customer reception analysis. It does not authorize Mini Delivery to update the current order's completion inside Masar. The current order status and delivery result during route execution are entered and owned in Masar by its representative workflow.
+The phrase “historical completed-order result” means a previous order fact that Mini Delivery uses — inside its own system — to compute the customer's reception rate. Those raw facts stay in Mini Delivery; only the finished rate crosses the wire (section 10). It does not authorize Mini Delivery to update the current order's completion inside Masar. The current order status and delivery result during route execution are entered and owned in Masar by its representative workflow.
 
 ## 5. External identity strategy
 
@@ -161,7 +162,8 @@ When `order.assigned` reaches Masar, Masar adds it to its assigned-order facts. 
   "customer": {
     "external_customer_id": "42",
     "name": "Ahmed Salem",
-    "phone": "+218910000001"
+    "phone": "+218910000001",
+    "reception_rate": 66.67
   },
   "representative": {
     "external_representative_id": "7",
@@ -172,46 +174,100 @@ When `order.assigned` reaches Masar, Masar adds it to its assigned-order facts. 
     "location_link": "https://maps.example/loc/125",
     "latitude": "32.8872000",
     "longitude": "13.1913000"
-  },
-  "customer_history": []
+  }
 }
 ```
 
 Money and coordinates are JSON strings to preserve database decimal precision. Masar validates and converts them to its chosen exact numeric representation.
 
-## 10. Customer history contract
+## 10. Customer reception rate contract
 
-V1 sends raw history only. Raw facts remain authoritative and let Masar independently compute company and representative-specific reception ratios. Precomputed percentages are intentionally omitted to avoid conflicting sources of truth.
+**Mini Delivery is the single source of truth for the customer's reception rate. Masar never computes it.**
 
-Each entry contains only a completed order with an actual delivery result:
+This inverts the V1 draft's original position. That draft sent raw `customer_history` entries so that Masar could derive the ratios itself, and stated that "precomputed percentages are intentionally omitted to avoid conflicting sources of truth." The opposite is now true, for the same underlying reason: two systems deriving the same figure from two different record sets *is* the conflicting-sources problem. One system computes it; everyone else relays it.
 
-```json
-{
-  "external_order_id": "101",
-  "external_representative_id": "7",
-  "result": "delivered",
-  "completed_at": "2026-08-10T13:20:00Z"
-}
-```
+**`customer_history` is not part of any V1 payload.** No raw delivery history is transmitted to Masar — not on `order.assigned`, not on `order.updated`, not on any other event. Masar has no inbound path for it and none is planned in V1.
 
-Rules:
+### The transmitted field
 
-- Include only `status = completed` with `result = delivered` or `not_delivered`.
-- Exclude `new`, `assigned`, and `cancelled`.
-- Cancellation never counts as `not_delivered`.
-- Exclude the current `external_order_id` from its own history. V1 never uses the current order's completion as an inbound update to Masar.
-- History is ordered by `completed_at` ascending, then `external_order_id`, for deterministic transfer.
-- An empty array means no previous reception history.
-- Inactive customers and representatives remain valid historical facts.
+| Event | Path |
+|---|---|
+| `order.assigned` | `data.customer.reception_rate` |
+| `order.updated` | `data.current_snapshot.customer.reception_rate` |
 
-Masar derives:
+| Property | Value |
+|---|---|
+| Type | JSON `number` or `null` |
+| Range | `0` – `100` inclusive |
+| Precision | at most two decimal places |
+| Presence | the key is always present in the current producer |
+
+Valid values: `82.5`, `66.67`, `0`, `100`, `null`.
+
+It is a JSON **number**, not a string — unlike money and coordinates, which are strings here to preserve decimal precision. A percentage is neither, and the receiving side declares the field numeric.
+
+### How Mini Delivery computes it
+
+`App\Services\CustomerHistoryService::getCompanyReceptionSummary()` is the only place this figure is produced:
 
 ```text
-company denominator = all received history entries
-company numerator   = entries where result = delivered
-representative denominator = entries for the selected representative
-representative numerator   = delivered entries for that representative
+completed  = orders with status = completed AND result IN (delivered, not_delivered)
+delivered  = those of them with result = delivered
+
+reception_rate = completed == 0
+    ? null
+    : round(delivered / completed * 100, 2)
 ```
+
+Rules that follow from it:
+
+- Only `status = completed` with `result = delivered` or `not_delivered` counts.
+- `new`, `assigned` and `cancelled` are excluded. **A cancellation never counts as `not_delivered`** and cannot lower the rate.
+- The scope is **company-wide** — the customer's record across all representatives. The per-representative summary (`getRepresentativeReceptionSummary`) exists in Mini Delivery for its own admin screens and is **not transmitted**; there is no per-representative reception rate in this contract.
+- The current order cannot count toward its own rate: it is not `completed` at the moment an event is produced for it.
+- The value is computed live when the outbound event is built. It is a snapshot of that instant, not a live query Masar can re-run.
+
+### `null` versus `0`
+
+```text
+null  =  the customer has no completed delivery history, so no rate exists
+0     =  the customer has completed history, and none of it was received
+```
+
+**`null` is not `0%`.** Neither side may convert one into the other — not by a default value, not by `COALESCE`, not by `?? 0`, and not by omitting the key.
+
+### What the receiver must do
+
+Masar's obligations are exhaustively: validate the bounds, store the value as it arrived, and return it unchanged. Masar must **not** derive this rate from its own order records, from `customers.total_orders`, or from `customers.delivered_orders`. Presentation formatting at the client (rendering `66.67` as `66.67%`) is display, not computation.
+
+### Deployment order
+
+**Deploy the Masar receiver first, then this producer.** Never the reverse.
+
+1. Deploy the Masar receiver that validates the optional `reception_rate`.
+2. Verify it accepts an event carrying the field, and still accepts one without it.
+3. Deploy this producer.
+
+In the steady state the field is backward compatible in both directions — an older producer that never sends it is accepted unchanged, and an older receiver ignores it — and that is precisely what makes the ordering easy to get wrong. The constraint below is about the moment of crossing between those two states, not about either of them.
+
+Masar computes its idempotency `payload_hash` over the **validated** payload rather than over the bytes that arrived. A receiver with no rule for `reception_rate` drops the key before hashing; a receiver with the rule keeps it. So one and the same event hashes differently on either side of the receiver upgrade:
+
+| Event | Hash before vs. after the receiver upgrade |
+|---|---|
+| does not carry `reception_rate` | identical — unaffected |
+| carries `reception_rate` | different |
+
+This matters only for a retry that spans the upgrade. If the old receiver accepted and recorded an event carrying the field, and the `200` was lost before it reached this producer, then re-sending that same event after the upgrade meets Masar's duplicate guard with a hash that no longer matches, and is answered `409 VERSION_CONFLICT` — "the event ID was reused with a different payload". Four conditions at once, and deploying in the order above removes all of them.
+
+### Recovery, if the transitional case occurs
+
+`409` is terminal for this producer: the outbox row becomes `failed`, and the older-unresolved-version guard then holds back every later event for that order until it is settled.
+
+- **First, read the code correctly.** A `409` here is not a rejection. It says Masar already holds that event ID under a different hash — which means the original event *was* applied. Confirm that against Masar's own record before doing anything else.
+- **What does not work:** `php artisan integration:retry {event_id}` returns the row to `pending` with the same stored payload, which meets the same hash and the same `409`. It is the correct recovery for an ordinary transient failure, and the wrong one for this case.
+- **What settles it:** marking that outbox row `sent` — a true statement about what actually happened — together with `order_integration_states.assigned_transmitted_at` when the event is an `order.assigned`. The queue then drains normally from the next version onward.
+
+None of this introduces a new retry mechanism, changes the HTTP retry policy, or changes how the hash is computed. It is an ordering rule, and a one-time one.
 
 ## 11. Order update contract
 
@@ -509,7 +565,7 @@ Ownership rules for applying payloads:
 | External assignment and reassignment | Mini Delivery owned change | Masar records the fact, then independently evaluates route/workload impact |
 | External cancellation | Mini Delivery owned change | Masar records the cancellation fact, then independently applies Iteration 3 logic |
 | Current tour status, current delivery result, current completion time | Masar owned | Never overwritten from an ordinary Mini Delivery snapshot |
-| Previous completed order result and `completed_at` inside `customer_history` | Historical only, sourced from Mini Delivery | Used for historical analysis; never applied to the current order |
+| `customer.reception_rate` | Mini Delivery owned, computed there | Stored and relayed verbatim by Masar; never recomputed, and never applied to the current order's result |
 
 ### Customer
 
@@ -518,6 +574,7 @@ Ownership rules for applying payloads:
 | `external_customer_id` | string | R | External identity |
 | `name` | string | R | Max 255 |
 | `phone` | string | R | Operational contact value; no cross-system format assumption |
+| `reception_rate` | number \| null | O, N | Company-wide reception rate, 0–100, at most two decimals. Computed by Mini Delivery and relayed unchanged; `null` means no completed history and is not `0` (section 10) |
 
 ### Representative
 
@@ -559,7 +616,9 @@ At least one usable location representation is expected operationally, but V1 ac
 | `previous_representative` | object | R for reassignment | Previous workload owner |
 | `new_representative` | object | R for reassignment | New workload owner |
 
-`customer_history` is required for `order.assigned`. It is optional on later events; if present it must obey the same raw-history rules and is treated as a replacement snapshot of previous history, not an append command.
+`customer.reception_rate` is optional and nullable on every event that carries a customer section. Absent means the producer stated nothing about the rate and the receiver must leave any stored value untouched; an explicit `null` is an authoritative statement that no rate exists and clears it; `0` is a real rate. It is never declared in `changed_fields` — it rides the snapshot, because it describes the customer rather than a field of this order.
+
+`customer_history` is not sent in V1 and has no place in any payload (section 10).
 
 ## 23. Complete JSON examples
 
@@ -584,7 +643,8 @@ At least one usable location representation is expected operationally, but V1 ac
     "customer": {
       "external_customer_id": "42",
       "name": "Ahmed Salem",
-      "phone": "+218910000001"
+      "phone": "+218910000001",
+      "reception_rate": 66.67
     },
     "representative": {
       "external_representative_id": "7",
@@ -595,21 +655,7 @@ At least one usable location representation is expected operationally, but V1 ac
       "location_link": "https://maps.example/loc/125",
       "latitude": "32.8872000",
       "longitude": "13.1913000"
-    },
-    "customer_history": [
-      {
-        "external_order_id": "101",
-        "external_representative_id": "7",
-        "result": "delivered",
-        "completed_at": "2026-08-10T13:20:00Z"
-      },
-      {
-        "external_order_id": "108",
-        "external_representative_id": "9",
-        "result": "not_delivered",
-        "completed_at": "2026-08-12T15:10:00Z"
-      }
-    ]
+    }
   }
 }
 ```
@@ -858,7 +904,7 @@ These future schema changes are required for reliable idempotency, ordering, aud
 |---|---|
 | `order.assigned` reception | استقبال الطلبات المسندة |
 | Customer snapshot in assigned/update events | استقبال بيانات العملاء |
-| Raw completed `customer_history` | استقبال سجل العميل وتمكين حساب النسب مستقلًا |
+| `customer.reception_rate` محسوبةً عند شركة التوصيل | تمرير نسبة الاستلام المعتمدة دون إعادة حسابها في مَسار |
 | `order.updated` with old/new values and snapshot | استقبال تعديل الطلب |
 | `order.reassigned` | وصول تغير الإسناد بوضوح |
 | `order.cancelled` with null result | استقبال الإلغاء دون اعتباره فشل تسليم |
@@ -897,5 +943,6 @@ None. Table names, retention periods, operational retry limits, and token-rotati
 - The current order is explicitly excluded from previous history.
 - Reassignment identifies previous and new representatives.
 - Updates state old and new values and provide a recoverable current snapshot.
-- Raw history independently supports company and representative reception ratios.
+- The company-wide reception rate has exactly one producer, and every other layer relays it unchanged.
+- `null` (no completed history) stays distinguishable from `0` (history with nothing received) end to end.
 - No bidirectional synchronization is introduced.
