@@ -17,6 +17,7 @@ use App\Services\IntegrationEventGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -108,7 +109,7 @@ class RecipientSnapshotNoFallbackTest extends TestCase
             $this->assertNotSame('+218920000002', $customerBlock['phone']);
 
             // Identity is the shared customer's, and stays so.
-            $this->assertSame((string) $customer->id, $customerBlock['external_customer_id']);
+            $this->assertSame($customer->integration_uid, $customerBlock['external_customer_id']);
         }
     }
 
@@ -216,8 +217,13 @@ class RecipientSnapshotNoFallbackTest extends TestCase
     {
         $customer = Customer::create(['name' => 'Shared New', 'phone' => '+218920000020']);
 
+        // Straight to the table, because the model's creating hook would seed
+        // the recipient this test needs absent. Bypassing it means minting the
+        // integration identity by hand too — the column is NOT NULL, and the
+        // hook that would have supplied it is the one being stepped around.
         $orderId = DB::table('delivery_orders')->insertGetId([
             'customer_id' => $customer->id,
+            'integration_uid' => (string) Str::uuid7(),
             'recipient_name' => null,
             'recipient_phone' => null,
             'value' => '20.00',
@@ -257,8 +263,13 @@ class RecipientSnapshotNoFallbackTest extends TestCase
     {
         $customer = Customer::create(['name' => 'Shared New', 'phone' => '+218920000030']);
 
+        // Straight to the table, because the model's creating hook would seed
+        // the recipient this test needs absent. Bypassing it means minting the
+        // integration identity by hand too — the column is NOT NULL, and the
+        // hook that would have supplied it is the one being stepped around.
         $orderId = DB::table('delivery_orders')->insertGetId([
             'customer_id' => $customer->id,
+            'integration_uid' => (string) Str::uuid7(),
             'recipient_name' => null,
             'recipient_phone' => null,
             'value' => '20.00',
@@ -411,7 +422,7 @@ class RecipientSnapshotNoFallbackTest extends TestCase
 
             // Its own version, advanced by one — not a shared or global sequence.
             $this->assertSame($versionsBefore[$orderId] + 1, (int) $event->order_version);
-            $this->assertSame((string) $orderId, $event->payload['data']['external_order_id']);
+            $this->assertSame(DeliveryOrder::findOrFail($orderId)->integration_uid, $event->payload['data']['external_order_id']);
 
             // Its own recipient. The other order's name would be the fan-out
             // reading one snapshot for both; the customer's name would be the
@@ -424,7 +435,7 @@ class RecipientSnapshotNoFallbackTest extends TestCase
             $this->assertSame('+218920000079', $event->payload['data']['changed_fields']['customer.phone']['new']);
 
             // Identity is still the shared customer's.
-            $this->assertSame((string) $customer->id, $snapshot['external_customer_id']);
+            $this->assertSame($customer->integration_uid, $snapshot['external_customer_id']);
         }
     }
 

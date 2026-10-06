@@ -280,7 +280,7 @@ class MasarTimerReasonReceiverTest extends TestCase
             'event_type' => MasarStatusEnvelope::EVENT_TYPE,
             'occurred_at' => $instant,
             'data' => [
-                'order_id' => (string) $order->getKey(),
+                'order_id' => (string) $order->integration_uid,
                 'status_version' => $version,
                 'delivery_status' => $status,
                 'status_reason' => $reason,

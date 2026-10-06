@@ -133,7 +133,7 @@ class MasarStatusReceiverTest extends TestCase
             ->assertOk()
             ->assertJsonPath('success', true)
             ->assertJsonPath('status', 'processed')
-            ->assertJsonPath('order_id', (string) $order->getKey());
+            ->assertJsonPath('order_id', (string) $order->integration_uid);
 
         $order->refresh();
 
@@ -668,7 +668,7 @@ class MasarStatusReceiverTest extends TestCase
             'event_type' => MasarStatusEnvelope::EVENT_TYPE,
             'occurred_at' => $instant,
             'data' => [
-                'order_id' => $externalOrderId ?? (string) $order?->getKey(),
+                'order_id' => $externalOrderId ?? (string) $order?->integration_uid,
                 'status_version' => $version,
                 'delivery_status' => $status->value,
                 'status_reason' => $reason,

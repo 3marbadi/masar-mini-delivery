@@ -7,6 +7,7 @@ use App\Enums\DeliveryOrderStatus;
 use App\Enums\DeliveryStatus;
 use App\Enums\LocationValidationStatus;
 use App\Enums\ReadinessStatus;
+use App\Models\Concerns\HasIntegrationUid;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -50,6 +51,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 ])]
 class DeliveryOrder extends Model
 {
+    use HasIntegrationUid;
+
     /**
      * Seed the recipient snapshot at creation (CONTRACT §13.14 — v5.1, D7).
      *

@@ -73,8 +73,8 @@ class IntegrationEventGenerationService
                 now(),
                 $version,
                 [
-                    'external_order_id' => (string) $order->getKey(),
-                    'previous_external_courier_id' => (string) $previousRepresentative->getKey(),
+                    'external_order_id' => (string) $order->integration_uid,
+                    'previous_external_courier_id' => (string) $previousRepresentative->integration_uid,
                     'courier' => $this->courierSnapshot($order->representative),
                 ],
             ),
@@ -94,7 +94,7 @@ class IntegrationEventGenerationService
                 IntegrationEventType::OrderCancelled,
                 now(),
                 $version,
-                ['external_order_id' => (string) $order->getKey()],
+                ['external_order_id' => (string) $order->integration_uid],
             ),
         );
     }
@@ -124,7 +124,7 @@ class IntegrationEventGenerationService
                 $occurredAt,
                 $version,
                 [
-                    'external_order_id' => (string) $order->getKey(),
+                    'external_order_id' => (string) $order->integration_uid,
                     'changed_fields' => $changedFields,
                     'current_snapshot' => $this->currentSnapshot($order),
                 ],
@@ -201,7 +201,7 @@ class IntegrationEventGenerationService
     private function orderSnapshot(DeliveryOrder $order): array
     {
         return [
-            'external_order_id' => (string) $order->getKey(),
+            'external_order_id' => (string) $order->integration_uid,
             'amount' => $order->value,
         ];
     }
@@ -263,18 +263,37 @@ class IntegrationEventGenerationService
         $customer = $order->customer;
 
         return [
-            'external_customer_id' => (string) $customer->getKey(),
+            'external_customer_id' => (string) $customer->integration_uid,
             'name' => $order->recipient_name,
             'phone' => $order->recipient_phone,
             'reception_rate' => $this->history->getCompanyReceptionSummary($customer)['reception_rate'],
         ];
     }
 
-    /** @return array<string, string|null> */
+    /**
+     * Who is carrying this order, named by the identity Masar can keep.
+     *
+     * `integration_uid` and not `getKey()`, and the same holds for the customer
+     * and the order above. The primary key is unique inside one incarnation of
+     * this database and nowhere else: rebuild it, restore it somewhere else, or
+     * replace it, and the next courier inherits the integer the previous one
+     * had. Masar keys its mapping on `(integration_client_id,
+     * external_courier_id)`, so a reused integer does not fail to resolve — it
+     * resolves to the wrong person, and that courier's orders and tours come
+     * with it. The uid is minted once per row and never moves, so a rebuilt
+     * database produces new couriers instead of silently claiming old ones.
+     *
+     * The three `external_*` ids are each the entity's own uid. None is derived
+     * from another, and none is derived from a name or a phone number — both of
+     * those change, and an identity that moved when a courier corrected their
+     * number would be no identity at all.
+     *
+     * @return array<string, string|null>
+     */
     private function courierSnapshot(?Representative $representative): array
     {
         return [
-            'external_courier_id' => (string) $representative?->getKey(),
+            'external_courier_id' => (string) $representative?->integration_uid,
             'name' => $representative?->name,
             'phone' => $representative?->phone,
         ];

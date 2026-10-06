@@ -658,7 +658,7 @@ class MasarLocationReceiverTest extends TestCase
             'event_type' => MasarLocationEnvelope::EVENT_TYPE,
             'occurred_at' => $stamp,
             'data' => [
-                'order_id' => $externalOrderId ?? (string) $order?->getKey(),
+                'order_id' => $externalOrderId ?? (string) $order?->integration_uid,
                 'location_version' => $version,
                 'location_changed_at' => $stamp,
                 'location_change_source' => LocationChangeStamp::SOURCE_MASAR,

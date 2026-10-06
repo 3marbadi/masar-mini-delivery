@@ -74,6 +74,17 @@ class FilamentAdminTest extends TestCase
 
         $this->assertDatabaseHas('representatives', ['name' => 'Representative A']);
 
+        // The panel is the path couriers are actually created through, and the
+        // form has no field for the integration identity — so the only thing
+        // that can supply one is the model. A row created here without it would
+        // be a courier Masar could not name.
+        $created = Representative::query()->where('name', 'Representative A')->sole();
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
+            $created->integration_uid,
+        );
+        $uidBeforeEdit = $representative->integration_uid;
+
         Livewire::test(EditRepresentative::class, ['record' => $representative->getRouteKey()])
             ->fillForm(['name' => 'New Name', 'is_active' => false])
             ->call('save')
@@ -84,6 +95,9 @@ class FilamentAdminTest extends TestCase
             'name' => 'New Name',
             'is_active' => false,
         ]);
+
+        // Renaming and deactivating through the panel leaves the identity alone.
+        $this->assertSame($uidBeforeEdit, $representative->fresh()->integration_uid);
     }
 
     public function test_customer_list_create_edit_and_phone_uniqueness_work_without_delete_actions(): void

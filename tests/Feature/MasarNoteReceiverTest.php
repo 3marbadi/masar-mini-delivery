@@ -433,7 +433,7 @@ class MasarNoteReceiverTest extends TestCase
             'event_type' => MasarNoteEnvelope::EVENT_TYPE,
             'occurred_at' => Carbon::now()->utc()->format('Y-m-d\TH:i:s\Z'),
             'data' => [
-                'order_id' => $externalOrderId ?? (string) $order?->getKey(),
+                'order_id' => $externalOrderId ?? (string) $order?->integration_uid,
                 'note_id' => $noteId,
                 'content' => $content,
                 'representative_id' => $representativeId,

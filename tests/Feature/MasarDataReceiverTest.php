@@ -161,7 +161,7 @@ class MasarDataReceiverTest extends TestCase
             'event_type' => MasarStatusEnvelope::EVENT_TYPE,
             'occurred_at' => $instant,
             'data' => [
-                'order_id' => (string) $order->getKey(),
+                'order_id' => (string) $order->integration_uid,
                 'status_version' => 1,
                 'delivery_status' => DeliveryStatus::Delivered->value,
                 'status_reason' => null,
@@ -270,7 +270,7 @@ class MasarDataReceiverTest extends TestCase
         ])->assertOk()
             ->assertJsonPath('status', 'processed')
             ->assertJsonPath('applied_data_version', 1)
-            ->assertJsonPath('order_id', (string) $order->getKey());
+            ->assertJsonPath('order_id', (string) $order->integration_uid);
 
         $order->refresh();
         $this->assertSame('محمد', $order->recipient_name);
@@ -499,7 +499,7 @@ class MasarDataReceiverTest extends TestCase
         // The identity is still the shared customer's: that is what
         // `external_customer_id` means, and it did not change.
         $this->assertSame(
-            (string) $order->customer_id,
+            $order->customer->integration_uid,
             $latest->payload['data']['current_snapshot']['customer']['external_customer_id'],
         );
     }
@@ -802,7 +802,7 @@ class MasarDataReceiverTest extends TestCase
             'event_type' => MasarDataEnvelope::EVENT_TYPE,
             'occurred_at' => Carbon::now()->utc()->format('Y-m-d\TH:i:s\Z'),
             'data' => [
-                'order_id' => $externalOrderId ?? (string) $order?->getKey(),
+                'order_id' => $externalOrderId ?? (string) $order?->integration_uid,
                 'data_version' => $version,
                 'base_order_version' => $base,
                 'changed_fields' => $changedFields ?? ['order.recipient_name' => 'محمد'],

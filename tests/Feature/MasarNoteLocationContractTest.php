@@ -42,6 +42,14 @@ class MasarNoteLocationContractTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * The order identity the pinned envelopes name.
+     *
+     * A uuid and not the row's key: since the identity moved off the primary
+     * key, this is the value Masar was given and the only one it can send back.
+     */
+    private const ORDER_UID = '01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71';
+
     /** One note, written by courier 7 on order 125 (§13.16.1). */
     private const NOTE = [
         'contract_version' => '1.0',
@@ -49,7 +57,7 @@ class MasarNoteLocationContractTest extends TestCase
         'event_type' => 'order.note.created',
         'occurred_at' => '2026-09-06T11:42:00Z',
         'data' => [
-            'order_id' => '125',
+            'order_id' => self::ORDER_UID,
             'note_id' => 481,
             'content' => 'المستلِم غير متاح، أعاود غداً',
             'representative_id' => 7,
@@ -57,7 +65,7 @@ class MasarNoteLocationContractTest extends TestCase
         ],
     ];
 
-    private const NOTE_DIGEST = 'ebc9ccdae2e331cafcd1925c27d8676aa4b4f4f8fde2e353f315f59f3892f24d';
+    private const NOTE_DIGEST = '0684271e07004040553c1e51a8a2e7c21a79d0f5984a9d4ffede10ee3e57b4e8';
 
     /** One completed location at version 1, stamped when it committed (§13.17.1). */
     private const LOCATION = [
@@ -66,7 +74,7 @@ class MasarNoteLocationContractTest extends TestCase
         'event_type' => 'order.location.updated',
         'occurred_at' => '2026-09-06T12:00:00Z',
         'data' => [
-            'order_id' => '125',
+            'order_id' => self::ORDER_UID,
             'location_version' => 1,
             'location_changed_at' => '2026-09-06T12:00:00Z',
             'location_change_source' => 'masar',
@@ -76,7 +84,7 @@ class MasarNoteLocationContractTest extends TestCase
         ],
     ];
 
-    private const LOCATION_DIGEST = '9d2994487d4e9debcd3997e5c5b0754f0790f225e1ba1e6cc621fa9c02478c0f';
+    private const LOCATION_DIGEST = 'a4aa18f9ca2d90f9268bb5e0531e0f71da7126afd8c2ddb69f95aae8e72d3c48';
 
     protected function setUp(): void
     {
@@ -115,7 +123,7 @@ class MasarNoteLocationContractTest extends TestCase
                 'representative_id' => 7,
                 'content' => 'المستلِم غير متاح، أعاود غداً',
                 'note_id' => 481,
-                'order_id' => '125',
+                'order_id' => self::ORDER_UID,
             ],
             'event_type' => 'order.note.created',
             'occurred_at' => '2026-09-06T11:42:00Z',
@@ -131,7 +139,7 @@ class MasarNoteLocationContractTest extends TestCase
                 'location_change_source' => 'masar',
                 'location_changed_at' => '2026-09-06T12:00:00Z',
                 'location_version' => 1,
-                'order_id' => '125',
+                'order_id' => self::ORDER_UID,
             ],
             'event_id' => 'c52e1a6b-4d2f-4b88-8d33-6e4f3a1b2c44',
             'occurred_at' => '2026-09-06T12:00:00Z',
@@ -225,7 +233,12 @@ class MasarNoteLocationContractTest extends TestCase
 
         $order = new DeliveryOrder;
         $order->forceFill([
+            // The local key and the integration identity are deliberately
+            // unrelated here: the envelopes name the uid, so a receiver that
+            // went back to resolving by `id` would fail this test rather than
+            // pass it by coincidence.
             'id' => 125,
+            'integration_uid' => self::ORDER_UID,
             'customer_id' => $customer->id,
             'recipient_name' => 'زبون',
             'recipient_phone' => '+218910000125',

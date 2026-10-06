@@ -68,7 +68,7 @@ class IntegrationEventGenerationTest extends TestCase
         $this->assertArrayNotHasKey('source_system', $payload);
         $this->assertSame('120.00', $payload['data']['order']['amount']);
         $this->assertSame('32.8872000', $payload['data']['location']['latitude']);
-        $this->assertSame((string) $representative->id, $payload['data']['courier']['external_courier_id']);
+        $this->assertSame($representative->integration_uid, $payload['data']['courier']['external_courier_id']);
         $this->assertArrayNotHasKey('customer_history', $payload['data']);
         // The rate travels as a finished figure, never as the raw history it
         // was made from. Both halves of that sentence are assertions here.
@@ -92,8 +92,8 @@ class IntegrationEventGenerationTest extends TestCase
         $event = $order->integrationOutboxEvents()->where('order_version', 2)->firstOrFail();
 
         $this->assertSame(IntegrationEventType::OrderReassigned, $event->event_type);
-        $this->assertSame((string) $first->id, $event->payload['data']['previous_external_courier_id']);
-        $this->assertSame((string) $second->id, $event->payload['data']['courier']['external_courier_id']);
+        $this->assertSame($first->integration_uid, $event->payload['data']['previous_external_courier_id']);
+        $this->assertSame($second->integration_uid, $event->payload['data']['courier']['external_courier_id']);
     }
 
     public function test_completion_delivered_is_local_and_does_not_create_event_or_increment_version(): void
@@ -128,7 +128,7 @@ class IntegrationEventGenerationTest extends TestCase
         $event = $cancelled->integrationOutboxEvents()->where('order_version', 2)->firstOrFail();
 
         $this->assertSame(IntegrationEventType::OrderCancelled, $event->event_type);
-        $this->assertSame((string) $assigned->id, $event->payload['data']['external_order_id']);
+        $this->assertSame($assigned->integration_uid, $event->payload['data']['external_order_id']);
         $this->assertSame(['external_order_id'], array_keys($event->payload['data']));
         $this->assertSame($assigned->representative_id, $cancelled->representative_id);
 
@@ -384,7 +384,7 @@ class IntegrationEventGenerationTest extends TestCase
         $this->assertWireRate(66.67, $snapshot['customer']['reception_rate']);
 
         // Additive only — the rest of the snapshot is untouched.
-        $this->assertSame((string) $customer->id, $snapshot['customer']['external_customer_id']);
+        $this->assertSame($customer->integration_uid, $snapshot['customer']['external_customer_id']);
         $this->assertSame($assigned->recipient_name, $snapshot['customer']['name']);
         $this->assertSame($assigned->recipient_phone, $snapshot['customer']['phone']);
         $this->assertSame('35.00', $snapshot['order']['amount']);

@@ -75,18 +75,60 @@ The phrase “historical completed-order result” means a previous order fact t
 
 ## 5. External identity strategy
 
-Every externally referenced entity is identified by the pair `source_system` plus its external ID. Existing Mini Delivery integer IDs may be serialized as strings in V1.
+Every externally referenced entity is identified by the pair `source_system` plus its external ID.
+
+**`external_*` IDs are opaque, immutable, source-owned integration identities. They MUST NOT depend on a rebuildable database primary key.**
 
 ```json
 {
   "source_system": "mini_delivery",
-  "external_order_id": "125",
-  "external_customer_id": "42",
-  "external_representative_id": "7"
+  "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
+  "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33",
+  "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18"
 }
 ```
 
+### What Mini Delivery sends
+
+Each of the three is a UUIDv7 held in a column of its own, minted once when the row is created and never changed afterwards:
+
+| Wire field | Source column |
+|---|---|
+| `external_order_id` | `delivery_orders.integration_uid` |
+| `external_customer_id` | `customers.integration_uid` |
+| `external_courier_id` | `representatives.integration_uid` |
+
+Each column is `CHAR(36) NOT NULL UNIQUE`, generated on the model's `creating` event so that every creation path produces one, and absent from every mass-assignment list so no inbound payload can set it. None is derived from another, and none is derived from a name, a phone number, a timestamp, an environment prefix or operator input — all of those change, and an identity that moves is not an identity.
+
+### Why not the primary key
+
+V1 of this document permitted "existing Mini Delivery integer IDs serialized as strings". That rule was withdrawn, because an auto-increment key is unique inside one incarnation of one database and nowhere else.
+
+Rebuild the Mini Delivery database, restore it into a fresh schema, or replace it, and the counter starts again: the next courier is handed the integer the previous one had. Masar keys its mapping on `(integration_client_id, external_courier_id)`, so a reused integer does not fail to resolve — it resolves, successfully and silently, to the earlier courier. The new person then inherits that representative's orders, tours and login. The same reasoning applies to customers and orders.
+
+This was not hypothetical. Two Mini Delivery databases each held a `representatives.id = 5` belonging to a different person, and Masar held one courier mapping for `external_courier_id = "5"` under a single integration client. Nothing in either system could tell which of the two it meant.
+
+A UUID fixes both halves of the problem, and the second half matters as much as the first:
+
+- A **rebuilt** database mints new UUIDs, so its rows arrive as new couriers, customers and orders rather than silently claiming existing ones. This is intended behaviour, not a regression: a rebuilt database genuinely holds different rows.
+- A **restored backup** carries the UUID in the row, so identity is preserved and existing Masar mappings keep resolving to the same entities.
+
+### Local keys stay local
+
+The primary key keeps every relationship it already owns. `integration_outbox.delivery_order_id`, `order_integration_states.delivery_order_id` and every `representative_id` / `customer_id` foreign key remain integer keys against integer keys. The rule is positional, not global:
+
+- inside the Mini Delivery database — local primary and foreign keys;
+- across the Mini Delivery → Masar wire — `integration_uid`.
+
+### Round trip
+
+Masar's outbound channels (status, data, note and location sync) return the same value in `data.order_id`. Mini Delivery resolves it by `delivery_orders.integration_uid`, which is the column it sent, so the identity makes the round trip unchanged. An `order_id` naming no row — unknown, or minted by a different incarnation of this database — is answered `404 ORDER_NOT_FOUND`.
+
+### On the Masar side
+
 Masar must keep its internal primary keys independent. It must never assume that its `orders.id`, `customers.id`, or `representatives.id` equals a Mini Delivery ID. Recommended uniqueness constraints on the Masar side use `(source_system, external_*_id)`.
+
+No change is required of Masar to accept these values: every `external_*` field was already specified as a string of at most 128 characters, and a 36-character UUID satisfies that unchanged. `contract_version` stays `"1.0"` — the value domain narrowed, the wire shape did not move.
 
 ## 6. Endpoint strategy
 
@@ -153,20 +195,20 @@ When `order.assigned` reaches Masar, Masar adds it to its assigned-order facts. 
 ```json
 {
   "order": {
-    "external_order_id": "125",
+    "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
     "status": "assigned",
     "value": "120.00",
     "created_at": "2026-08-14T09:50:00Z",
     "assigned_at": "2026-08-14T10:00:00Z"
   },
   "customer": {
-    "external_customer_id": "42",
+    "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33",
     "name": "Ahmed Salem",
     "phone": "+218910000001",
     "reception_rate": 66.67
   },
-  "representative": {
-    "external_representative_id": "7",
+  "courier": {
+    "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18",
     "name": "Omar Ali",
     "phone": "+218920000007"
   },
@@ -287,7 +329,7 @@ None of this introduces a new retry mechanism, changes the HTTP retry policy, or
   "current_snapshot": {
     "order": {},
     "customer": {},
-    "representative": {},
+    "courier": {},
     "location": {}
   }
 }
@@ -331,52 +373,39 @@ Since Masar keys customers by `(source_system, external_customer_id)`, each proc
 
 ## 12. Cancellation contract
 
-Cancellation uses `order.cancelled` with:
+Cancellation uses `order.cancelled`, whose `data` carries one key and nothing else — the order's identity. The fact of cancellation is the event type; there is no field left to state it.
 
 ```json
 {
-  "changed_fields": {
-    "order.status": { "old": "assigned", "new": "cancelled" },
-    "order.cancelled_at": { "old": null, "new": "2026-08-14T11:00:00Z" }
-  },
-  "current_snapshot": {
-    "order": {
-      "external_order_id": "125",
-      "status": "cancelled",
-      "result": null,
-      "cancelled_at": "2026-08-14T11:00:00Z"
-    }
+  "data": {
+    "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71"
   }
 }
 ```
 
-The last assigned representative remains in the full snapshot. Cancellation always has `result = null`; it is never encoded as `not_delivered` and never lowers reception-rate history.
+No `changed_fields` and no `current_snapshot`: Masar already holds the order, its customer and its courier from earlier events, and the cancellation changes none of them. `occurred_at` on the envelope is the cancellation time.
+
+Masar's receiver additionally accepts an optional nullable `data.reason`; Mini Delivery does not currently send one.
+
+Cancellation never encodes a delivery result. It is never sent as `not_delivered` and never lowers reception-rate history.
 
 ## 13. Reassignment contract
 
-`order.reassigned` explicitly contains both representatives:
+`order.reassigned` names both couriers: the one being replaced by identity alone, and the one taking over as a full snapshot.
 
 ```json
 {
-  "previous_representative": {
-    "external_representative_id": "7",
-    "name": "Omar Ali",
-    "phone": "+218920000007"
-  },
-  "new_representative": {
-    "external_representative_id": "9",
+  "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
+  "previous_external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18",
+  "courier": {
+    "external_courier_id": "01998f52-0c33-7b90-8f44-9ae1b6d2730c",
     "name": "Sami Noor",
     "phone": null
-  },
-  "changed_fields": {
-    "representative.external_representative_id": {
-      "old": "7",
-      "new": "9"
-    }
-  },
-  "current_snapshot": {}
+  }
 }
 ```
+
+`previous_external_courier_id` is the identity Masar already holds for the outgoing courier, so it resolves against the mapping it created on an earlier event. It is a bare identity and not an object: Masar is being told which courier is leaving, not being given a fresh description of them.
 
 This event does not tell Masar how to modify a route. It only states the operational reassignment fact.
 
@@ -552,7 +581,7 @@ Legend: R = required, O = optional, N = nullable.
 | `external_order_id` | string | R | Mini Delivery order ID as external identity |
 | `value` | decimal string | R | Non-negative, two decimal places |
 | `created_at` | datetime | R | UTC |
-| `status` | enum | R only for assigned/cancel event | `assigned` is the initial admission fact; `cancelled` is an explicit external business change. It is omitted from ordinary update/reassignment snapshots. |
+| `status` | enum | R only for assigned/cancel event | `assigned` is the initial admission fact; `cancelled` is an explicit external business change. It is omitted from ordinary update snapshots, and `order.reassigned` carries no snapshot at all. |
 | `assigned_at` | datetime | R for assigned | Event occurrence time in V1 until a dedicated field exists |
 | `result` | null | R for cancellation | Must be null. Current delivery results are Masar-owned and are never sent as updates. |
 | `cancelled_at` | datetime | R for cancellation | External cancellation time |
@@ -576,15 +605,17 @@ Ownership rules for applying payloads:
 | `phone` | string | R | Operational contact value; no cross-system format assumption |
 | `reception_rate` | number \| null | O, N | Company-wide reception rate, 0–100, at most two decimals. Computed by Mini Delivery and relayed unchanged; `null` means no completed history and is not `0` (section 10) |
 
-### Representative
+### Courier
+
+Carried as `data.courier` (and as `data.current_snapshot.courier` on an update).
 
 | Field | Type | Rule | Notes |
 |---|---|---|---|
-| `external_representative_id` | string | R | External identity |
-| `name` | string | R | Current Mini Delivery name |
-| `phone` | string/null | O, N | Contact detail, not required for routing identity |
+| `external_courier_id` | string | R | Stable external identity — `representatives.integration_uid`, never the local primary key (section 5) |
+| `name` | string | R | Current Mini Delivery name. Descriptive only; changing it does not change the identity above |
+| `phone` | string/null | O, N | Contact detail, not required for routing identity, and never an identity itself |
 
-The representative object is required for assigned, reassigned, and cancellation of a previously assigned order. It may be nullable only where a cancellation legitimately occurred before assignment.
+The courier object is required for assigned, reassigned, and cancellation of a previously assigned order. It may be nullable only where a cancellation legitimately occurred before assignment.
 
 ### Location
 
@@ -601,7 +632,7 @@ At least one usable location representation is expected operationally, but V1 ac
 | Field | Type | Rule | Notes |
 |---|---|---|---|
 | `external_order_id` | string | R | Must differ from current order ID |
-| `external_representative_id` | string | R | Historical representative, active or inactive |
+| `external_courier_id` | string | R | Historical representative, active or inactive |
 | `result` | enum | R | `delivered` or `not_delivered` only |
 | `completed_at` | datetime | R | UTC; historical completion time |
 
@@ -609,12 +640,11 @@ At least one usable location representation is expected operationally, but V1 ac
 
 | Field | Type | Rule | Notes |
 |---|---|---|---|
-| `changed_fields` | object | R for update/reassign/cancel | At least one supported path |
+| `changed_fields` | object | R for `order.updated` only | At least one supported path. Not carried by `order.reassigned` or `order.cancelled` (sections 12, 13) |
 | `changed_fields.<path>.old` | matching field type/null | R, N | Previous value |
 | `changed_fields.<path>.new` | matching field type/null | R, N | Current value |
-| `current_snapshot` | object | R | Complete current source-owned external snapshot; it excludes Masar-owned tour status/result/completion |
-| `previous_representative` | object | R for reassignment | Previous workload owner |
-| `new_representative` | object | R for reassignment | New workload owner |
+| `current_snapshot` | object | R for `order.updated` only | Complete current source-owned external snapshot; it excludes Masar-owned tour status/result/completion. Not carried by `order.reassigned` or `order.cancelled` |
+| `previous_external_courier_id` | string | R for reassignment | Stable identity of the outgoing courier, resolved against the mapping an earlier event created |
 
 `customer.reception_rate` is optional and nullable on every event that carries a customer section. Absent means the producer stated nothing about the rate and the receiver must leave any stored value untouched; an explicit `null` is an authoritative statement that no rate exists and clears it; `0` is a real rate. It is never declared in `changed_fields` — it rides the snapshot, because it describes the customer rather than a field of this order.
 
@@ -634,20 +664,20 @@ At least one usable location representation is expected operationally, but V1 ac
   "order_version": 1,
   "data": {
     "order": {
-      "external_order_id": "125",
+      "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
       "status": "assigned",
       "value": "120.00",
       "created_at": "2026-08-14T09:50:00Z",
       "assigned_at": "2026-08-14T10:00:00Z"
     },
     "customer": {
-      "external_customer_id": "42",
+      "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33",
       "name": "Ahmed Salem",
       "phone": "+218910000001",
       "reception_rate": 66.67
     },
-    "representative": {
-      "external_representative_id": "7",
+    "courier": {
+      "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18",
       "name": "Omar Ali",
       "phone": "+218920000007"
     },
@@ -675,9 +705,9 @@ At least one usable location representation is expected operationally, but V1 ac
       "customer.name": { "old": "Ahmed Salem", "new": "Ahmed M. Salem" }
     },
     "current_snapshot": {
-      "order": { "external_order_id": "125", "value": "120.00", "created_at": "2026-08-14T09:50:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000001" },
-      "representative": { "external_representative_id": "7", "name": "Omar Ali", "phone": "+218920000007" },
+      "order": { "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71", "value": "120.00", "created_at": "2026-08-14T09:50:00Z" },
+      "customer": { "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33", "name": "Ahmed M. Salem", "phone": "+218910000001" },
+      "courier": { "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18", "name": "Omar Ali", "phone": "+218920000007" },
       "location": { "location_link": "https://maps.example/loc/125", "latitude": "32.8872000", "longitude": "13.1913000" }
     }
   }
@@ -701,9 +731,9 @@ The same customer change produces two independent events because orders `100` an
       "customer.phone": { "old": "+218910000001", "new": "+218910000099" }
     },
     "current_snapshot": {
-      "order": { "external_order_id": "100", "value": "75.00", "created_at": "2026-08-14T08:00:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "7", "name": "Omar Ali", "phone": "+218920000007" },
+      "order": { "external_order_id": "01998f4c-7a10-7d02-8c61-3f5a9b1e4720", "value": "75.00", "created_at": "2026-08-14T08:00:00Z" },
+      "customer": { "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33", "name": "Ahmed M. Salem", "phone": "+218910000099" },
+      "courier": { "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18", "name": "Omar Ali", "phone": "+218920000007" },
       "location": { "location_link": "maps.example/100", "latitude": "32.8800000", "longitude": "13.1800000" }
     }
   }
@@ -723,9 +753,9 @@ The same customer change produces two independent events because orders `100` an
       "customer.phone": { "old": "+218910000001", "new": "+218910000099" }
     },
     "current_snapshot": {
-      "order": { "external_order_id": "101", "value": "95.00", "created_at": "2026-08-14T08:30:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "9", "name": "Sami Noor", "phone": null },
+      "order": { "external_order_id": "01998f4c-7a10-7e55-9d73-8a2c6f30b941", "value": "95.00", "created_at": "2026-08-14T08:30:00Z" },
+      "customer": { "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33", "name": "Ahmed M. Salem", "phone": "+218910000099" },
+      "courier": { "external_courier_id": "01998f52-0c33-7b90-8f44-9ae1b6d2730c", "name": "Sami Noor", "phone": null },
       "location": { "location_link": "maps.example/101", "latitude": "32.8900000", "longitude": "13.1900000" }
     }
   }
@@ -751,9 +781,9 @@ Order #102: not assigned/sent → no integration event
       "order.value": { "old": "120.00", "new": "135.50" }
     },
     "current_snapshot": {
-      "order": { "external_order_id": "125", "value": "135.50", "created_at": "2026-08-14T09:50:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "7", "name": "Omar Ali", "phone": "+218920000007" },
+      "order": { "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71", "value": "135.50", "created_at": "2026-08-14T09:50:00Z" },
+      "customer": { "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33", "name": "Ahmed M. Salem", "phone": "+218910000099" },
+      "courier": { "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18", "name": "Omar Ali", "phone": "+218920000007" },
       "location": { "location_link": "https://maps.example/loc/125", "latitude": "32.8872000", "longitude": "13.1913000" }
     }
   }
@@ -777,65 +807,60 @@ Order #102: not assigned/sent → no integration event
       "location.longitude": { "old": "13.1913000", "new": "13.1950000" }
     },
     "current_snapshot": {
-      "order": { "external_order_id": "125", "value": "135.50", "created_at": "2026-08-14T09:50:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "7", "name": "Omar Ali", "phone": "+218920000007" },
+      "order": { "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71", "value": "135.50", "created_at": "2026-08-14T09:50:00Z" },
+      "customer": { "external_customer_id": "01998f4c-7a10-7a21-b4d8-2c9e5f107a33", "name": "Ahmed M. Salem", "phone": "+218910000099" },
+      "courier": { "external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18", "name": "Omar Ali", "phone": "+218920000007" },
       "location": { "location_link": "https://maps.example/loc/125b", "latitude": "32.8890000", "longitude": "13.1950000" }
     }
   }
 }
 ```
 
-### Example 6 — Representative reassignment
+### Example 6 — Courier reassignment
+
+`order.reassigned` carries exactly three keys in `data`, and this example is the whole payload — there is no `changed_fields` and no `current_snapshot` on this event type (section 13). Earlier revisions of this document showed `previous_representative` and `new_representative` objects; the serializer has never emitted them.
 
 ```json
 {
   "contract_version": "1.0",
-  "source_system": "mini_delivery",
   "event_id": "0198a14a-1000-7a01-b200-000000000005",
   "event_type": "order.reassigned",
   "occurred_at": "2026-08-14T10:50:00Z",
   "order_version": 5,
   "data": {
-    "previous_representative": { "external_representative_id": "7", "name": "Omar Ali", "phone": "+218920000007" },
-    "new_representative": { "external_representative_id": "9", "name": "Sami Noor", "phone": null },
-    "changed_fields": {
-      "representative.external_representative_id": { "old": "7", "new": "9" }
-    },
-    "current_snapshot": {
-      "order": { "external_order_id": "125", "value": "135.50", "created_at": "2026-08-14T09:50:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "9", "name": "Sami Noor", "phone": null },
-      "location": { "location_link": "https://maps.example/loc/125b", "latitude": "32.8890000", "longitude": "13.1950000" }
+    "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
+    "previous_external_courier_id": "01998f4c-7a10-78e4-9a16-4b7c2d905e18",
+    "courier": {
+      "external_courier_id": "01998f52-0c33-7b90-8f44-9ae1b6d2730c",
+      "name": "Sami Noor",
+      "phone": null
     }
   }
 }
 ```
 
+The outgoing courier is named by identity alone — Masar already holds a mapping for `01998f4c-7a10-78e4-9a16-4b7c2d905e18` from an earlier event, so there is nothing left to describe. The incoming courier arrives as a full snapshot because this may be the first event that names them.
+
+> This example omits `source_system`, because the envelope builder does not emit it. The other examples in this section still show it; that is a separate documentation drift predating the identity change and is not corrected here.
+
 ### Example 7 — Cancellation
+
+One key in `data`, as section 12 states. This is the whole payload.
 
 ```json
 {
   "contract_version": "1.0",
-  "source_system": "mini_delivery",
   "event_id": "0198a14a-1000-7a01-b200-000000000006",
   "event_type": "order.cancelled",
   "occurred_at": "2026-08-14T11:00:00Z",
   "order_version": 6,
   "data": {
-    "changed_fields": {
-      "order.status": { "old": "assigned", "new": "cancelled" },
-      "order.cancelled_at": { "old": null, "new": "2026-08-14T11:00:00Z" }
-    },
-    "current_snapshot": {
-      "order": { "external_order_id": "125", "status": "cancelled", "result": null, "value": "135.50", "created_at": "2026-08-14T09:50:00Z", "cancelled_at": "2026-08-14T11:00:00Z" },
-      "customer": { "external_customer_id": "42", "name": "Ahmed M. Salem", "phone": "+218910000099" },
-      "representative": { "external_representative_id": "9", "name": "Sami Noor", "phone": null },
-      "location": { "location_link": "https://maps.example/loc/125b", "latitude": "32.8890000", "longitude": "13.1950000" }
-    }
+    "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71"
   }
 }
 ```
+
+> As with Example 6, `source_system` is omitted because the envelope builder does not emit it.
 
 ### Example 8 — Duplicate retry response
 
@@ -941,7 +966,7 @@ None. Table names, retention periods, operational retry limits, and token-rotati
 - Older events cannot overwrite newer snapshots.
 - Cancellation never becomes `not_delivered` and cannot lower reception history.
 - The current order is explicitly excluded from previous history.
-- Reassignment identifies previous and new representatives.
+- Reassignment identifies both couriers: the outgoing one by stable identity, the incoming one by full snapshot.
 - Updates state old and new values and provide a recoverable current snapshot.
 - The company-wide reception rate has exactly one producer, and every other layer relays it unchanged.
 - `null` (no completed history) stays distinguishable from `0` (history with nothing received) end to end.

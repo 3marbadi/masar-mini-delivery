@@ -42,6 +42,14 @@ class MasarStatusContractTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * The order identity the pinned envelopes name.
+     *
+     * A uuid and not the row's key: since the identity moved off the primary
+     * key, this is the value Masar was given and the only one it can send back.
+     */
+    private const ORDER_UID = '01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71';
+
     /** A postponement at version 1 — the first announcement about an order. */
     private const POSTPONED_V1 = [
         'contract_version' => '1.0',
@@ -49,7 +57,7 @@ class MasarStatusContractTest extends TestCase
         'event_type' => 'order.delivery_status.updated',
         'occurred_at' => '2026-09-05T11:42:00Z',
         'data' => [
-            'order_id' => '125',
+            'order_id' => self::ORDER_UID,
             'status_version' => 1,
             'delivery_status' => 'postponed',
             'status_reason' => 'customer_absent',
@@ -64,7 +72,7 @@ class MasarStatusContractTest extends TestCase
         'event_type' => 'order.delivery_status.updated',
         'occurred_at' => '2026-09-05T13:05:00Z',
         'data' => [
-            'order_id' => '125',
+            'order_id' => self::ORDER_UID,
             'status_version' => 2,
             'delivery_status' => 'with_rep',
             'status_reason' => null,
@@ -73,9 +81,9 @@ class MasarStatusContractTest extends TestCase
     ];
 
     /** The digests Masar computes for them, asserted there as literals too. */
-    private const POSTPONED_V1_DIGEST = 'cee9aa28fe804cdb2fefee3b3f6027bdcee5b775c2d1f2a79fa6d3af5efea043';
+    private const POSTPONED_V1_DIGEST = 'e5842637216678e80163b41018d50c00eddffcda8897cc875d150ef4e869765f';
 
-    private const CLEARED_V2_DIGEST = 'e0c75bf2657aa58844768ff0475120a2f53d6c7cdc70d6c0e79286de0db236c8';
+    private const CLEARED_V2_DIGEST = '16c681c2224bd4f9a11cec0780b496fe525710c0f68ca42eb626577f3bf4b5cd';
 
     protected function setUp(): void
     {
@@ -107,7 +115,7 @@ class MasarStatusContractTest extends TestCase
                 'result_occurred_at' => '2026-09-05T11:42:00Z',
                 'delivery_status' => 'postponed',
                 'status_version' => 1,
-                'order_id' => '125',
+                'order_id' => self::ORDER_UID,
             ],
             'event_type' => 'order.delivery_status.updated',
             'occurred_at' => '2026-09-05T11:42:00Z',
@@ -128,7 +136,7 @@ class MasarStatusContractTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('status', 'processed')
             ->assertJsonPath('event_id', self::POSTPONED_V1['event_id'])
-            ->assertJsonPath('order_id', '125');
+            ->assertJsonPath('order_id', self::ORDER_UID);
 
         $order->refresh();
         $this->assertSame(DeliveryStatus::Postponed, $order->delivery_status);
@@ -220,7 +228,12 @@ class MasarStatusContractTest extends TestCase
         // `forceFill`, because the id is the point: `create()` would ignore it
         // as unfillable and give the row whatever the sequence had next.
         $order->forceFill([
+            // The local key and the integration identity are deliberately
+            // unrelated here: the envelopes name the uid, so a receiver that
+            // went back to resolving by `id` would fail this test rather than
+            // pass it by coincidence.
             'id' => 125,
+            'integration_uid' => self::ORDER_UID,
             'customer_id' => Customer::create(['name' => 'Customer', 'phone' => '0911234567'])->id,
             'value' => '20.00',
             'status' => DeliveryOrderStatus::NewOrder,

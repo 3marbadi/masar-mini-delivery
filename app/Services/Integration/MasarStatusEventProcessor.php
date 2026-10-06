@@ -95,13 +95,18 @@ class MasarStatusEventProcessor
                     return $this->duplicate($duplicate, $hash, $externalOrderId);
                 }
 
-                // §3.21.4 — Mini Delivery's own id, as Masar was given it.
-                // A non-numeric string can never name a row here, and is
-                // answered exactly as a missing order: the sender's recourse is
-                // the same either way, and §3.21.7 gives it one code.
-                $order = ctype_digit($externalOrderId)
-                    ? DeliveryOrder::query()->lockForUpdate()->find((int) $externalOrderId)
-                    : null;
+                // §3.21.4 — Mini Delivery's own id, as Masar was given it:
+                // `integration_uid`, the durable identity, never `id`. Matched
+                // against the same column the outbound payload sends, so the
+                // value makes the round trip unchanged. A string naming no row
+                // — unknown, or minted by a different incarnation of this
+                // database — is answered exactly as a missing order: the
+                // sender's recourse is the same either way, and §3.21.7 gives
+                // it one code.
+                $order = DeliveryOrder::query()
+                    ->where('integration_uid', $externalOrderId)
+                    ->lockForUpdate()
+                    ->first();
 
                 if ($order === null) {
                     throw new MasarIntegrationException(

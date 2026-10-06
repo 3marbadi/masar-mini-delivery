@@ -93,9 +93,10 @@ class MasarLocationEventProcessor
                     return $this->duplicate($duplicate, $hash, $externalOrderId);
                 }
 
-                $order = ctype_digit($externalOrderId)
-                    ? DeliveryOrder::query()->lockForUpdate()->find((int) $externalOrderId)
-                    : null;
+                $order = DeliveryOrder::query()
+                    ->where('integration_uid', $externalOrderId)
+                    ->lockForUpdate()
+                    ->first();
 
                 if ($order === null) {
                     throw new MasarIntegrationException(
