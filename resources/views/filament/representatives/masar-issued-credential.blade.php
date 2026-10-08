@@ -11,8 +11,12 @@
     that case is not an error to hide: it is the guarantee working, and the operator is
     told plainly that the only way forward is a deliberate reset.
 
-    The copy buttons act on the explicit click and keep nothing: no local storage, no
-    session storage, no "remember", and nothing is copied automatically.
+    The copy buttons act on the explicit tap and keep nothing: no local storage, no
+    session storage, no IndexedDB, no "remember", and nothing is copied automatically.
+    Their Alpine component lives in `resources/js/masar-credential.js`; it reads each
+    value from the node below that already displays it, so the secret is never written
+    into an attribute, an action argument or a captured JS variable. The confirmation
+    is local and expires on a timer — no notification, no server request.
 
     Styling comes from `resources/css/masar-credential.css` through Filament's asset
     registry, plus Filament's own button component. No Tailwind utility is used — the
@@ -32,20 +36,32 @@
         </p>
     </div>
 @else
-    <div class="masar-credential-issued" data-masar-credential="issued" x-data>
+    <div
+        class="masar-credential-issued"
+        data-masar-credential="issued"
+        x-data="masarCredentialCopy"
+    >
         <div>
             <p class="masar-credential-secret-label">اسم المستخدم</p>
 
             <div class="masar-credential-secret-row">
-                <code class="masar-credential-secret-value" data-masar-issued-login-name>{{ $credential->loginName }}</code>
+                <code
+                    class="masar-credential-secret-value"
+                    data-masar-issued-login-name
+                    x-ref="loginName"
+                >{{ $credential->loginName }}</code>
 
                 <x-filament::button
                     size="sm"
                     color="gray"
                     icon="heroicon-m-clipboard"
-                    x-on:click="navigator.clipboard.writeText(@js($credential->loginName))"
+                    x-on:click="copyFrom('loginName', 'login')"
                 >
-                    نسخ اسم المستخدم
+                    {{-- Server-rendered default, swapped by Alpine on a successful
+                         copy. Deliberately not x-show + x-cloak: this panel ships no
+                         `[x-cloak]` rule, so both labels would show until Alpine
+                         booted. --}}
+                    <span x-text="copied === 'login' ? 'تم النسخ' : 'نسخ اسم المستخدم'">نسخ اسم المستخدم</span>
                 </x-filament::button>
             </div>
         </div>
@@ -57,15 +73,16 @@
                 <code
                     class="masar-credential-secret-value masar-credential-secret-value--password"
                     data-masar-issued-password
+                    x-ref="password"
                 >{{ $credential->password }}</code>
 
                 <x-filament::button
                     size="sm"
                     color="gray"
                     icon="heroicon-m-clipboard"
-                    x-on:click="navigator.clipboard.writeText(@js($credential->password))"
+                    x-on:click="copyFrom('password', 'password')"
                 >
-                    نسخ كلمة المرور
+                    <span x-text="copied === 'password' ? 'تم النسخ' : 'نسخ كلمة المرور'">نسخ كلمة المرور</span>
                 </x-filament::button>
             </div>
         </div>

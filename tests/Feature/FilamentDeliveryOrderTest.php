@@ -50,12 +50,17 @@ class FilamentDeliveryOrderTest extends TestCase
             ->assertFormFieldDoesNotExist('result')
             ->assertFormFieldDoesNotExist('completed_at')
             ->assertFormFieldDoesNotExist('cancelled_at')
+            // The operator supplies the link and never the coordinates: Masar owns
+            // turning one into the other and announces the result back (§3.7, D13).
+            // Asserted rather than merely omitted, because `fillForm` ignores keys
+            // with no matching field — so dropping the two values alone would leave a
+            // test that passes whether the fields exist or not.
+            ->assertFormFieldDoesNotExist('latitude')
+            ->assertFormFieldDoesNotExist('longitude')
             ->fillForm([
                 'customer_id' => $customer->id,
                 'value' => '45.75',
                 'location_link' => 'maps.example/place/123',
-                'latitude' => '32.8872000',
-                'longitude' => '13.1913000',
             ])
             ->call('create')
             ->assertHasNoFormErrors();
@@ -98,11 +103,11 @@ class FilamentDeliveryOrderTest extends TestCase
             ->assertFormFieldDoesNotExist('result')
             ->assertFormFieldDoesNotExist('completed_at')
             ->assertFormFieldDoesNotExist('cancelled_at')
+            ->assertFormFieldDoesNotExist('latitude')
+            ->assertFormFieldDoesNotExist('longitude')
             ->fillForm([
                 'value' => '90.50',
                 'location_link' => 'new-location',
-                'latitude' => '31.0000000',
-                'longitude' => '14.0000000',
                 'customer_id' => $otherCustomer->id,
             ])
             ->call('save')

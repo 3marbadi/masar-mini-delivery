@@ -6,6 +6,7 @@ use App\Models\MasarIntegrationClient;
 use App\Models\Representative;
 use App\Policies\RepresentativePolicy;
 use Filament\Support\Assets\Css;
+use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -52,6 +53,11 @@ class AppServiceProvider extends ServiceProvider
         // commits.
         FilamentAsset::register([
             Css::make('masar-credential', resource_path('css/masar-credential.css')),
+            // The copy buttons' Alpine component, registered the same way and for the
+            // same reason: a real file that can be read and tested, rather than an
+            // inline expression. It also keeps the secret out of any attribute — the
+            // component reads the value from the node already displaying it.
+            Js::make('masar-credential', resource_path('js/masar-credential.js')),
         ]);
 
         // Ceilings for the Masar receiving channel (CONTRACT §3.21).
