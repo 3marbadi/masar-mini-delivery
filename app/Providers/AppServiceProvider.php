@@ -3,8 +3,13 @@
 namespace App\Providers;
 
 use App\Models\MasarIntegrationClient;
+use App\Models\Representative;
+use App\Policies\RepresentativePolicy;
+use Filament\Support\Assets\Css;
+use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -23,6 +28,32 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Stated rather than left to Laravel's convention-based discovery.
+        //
+        // Discovery would find App\Policies\RepresentativePolicy on its own, and
+        // that is precisely the problem: the one authorization decision this
+        // application makes about Masar credentials (§13.28.14) would then be
+        // bound by a naming coincidence, and renaming either class would silently
+        // open the ability rather than break the build.
+        Gate::policy(Representative::class, RepresentativePolicy::class);
+
+        // The stylesheet for the «حساب مسار» card and its one-time credential modal.
+        //
+        // Registered through Filament's own asset registry rather than built with
+        // Tailwind, because the panel's compiled stylesheet carries Filament's
+        // semantic `.fi-*` selectors and no utility selectors at all — a view written
+        // in utilities renders as unstyled text. `php artisan filament:assets` copies
+        // this to `public/css/app/masar-credential.css`, and the `@filamentStyles`
+        // directive the panel layout already calls emits the `<link>` for it.
+        //
+        // The consequence worth stating: this feature adds **no** Node, npm, Vite or
+        // custom-theme step to the deployment path. The source file is tracked, and
+        // the published copy lives beside the Filament asset this project already
+        // commits.
+        FilamentAsset::register([
+            Css::make('masar-credential', resource_path('css/masar-credential.css')),
+        ]);
+
         // Ceilings for the Masar receiving channel (CONTRACT §3.21).
         //
         // The token leg is keyed by caller and client id, so one misbehaving

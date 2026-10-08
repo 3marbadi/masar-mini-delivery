@@ -8,10 +8,39 @@ return [
         'client_secret' => env('MASAR_INTEGRATION_CLIENT_SECRET'),
         'token_path' => '/api/v1/integration/auth/token',
         'endpoint_path' => '/api/v1/integration/events',
+
+        /*
+         * The credential-management legs (Masar CONTRACT §13.28.4, D29, v5.16).
+         *
+         * A base segment rather than two path templates with a placeholder in them:
+         * the courier identity is interpolated by MasarCredentialClient, which
+         * encodes it, and a template string would invite a `str_replace` at the
+         * call site instead.
+         *
+         * Nothing here names a host. The base url stays the single place a
+         * deployment points at Masar, so a staging run cannot reach production by
+         * inheriting half a path.
+         */
+        'representatives_path' => '/api/v1/integration/representatives',
         'token_safety_seconds' => (int) env('MASAR_INTEGRATION_TOKEN_SAFETY_SECONDS', 60),
         'timeout' => 10,
         'batch_limit' => 50,
         'max_attempts' => 5,
+
+        /*
+         * Two timeouts for the credential legs, and the shorter one is the read.
+         *
+         * The read runs while an administrator waits for a representative page, so
+         * it should give up quickly and let the section render its unavailable
+         * state. The mutation does more work on the far side — a transaction and a
+         * bcrypt hash — and timing one out is the expensive ambiguous case
+         * (§13.28.11: the result becomes unknown, and only a human can close it),
+         * so it is given more room rather than less.
+         *
+         * Both carry defaults, so a deployment needs no `.env` change to boot.
+         */
+        'credential_read_timeout' => (int) env('MASAR_CREDENTIAL_READ_TIMEOUT', 5),
+        'credential_mutation_timeout' => (int) env('MASAR_CREDENTIAL_TIMEOUT', 10),
     ],
 
     /*
