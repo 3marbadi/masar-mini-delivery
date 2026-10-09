@@ -10,6 +10,7 @@ use App\Filament\Resources\DeliveryOrders\Pages\EditDeliveryOrder;
 use App\Filament\Resources\DeliveryOrders\Pages\ListDeliveryOrders;
 use App\Filament\Resources\DeliveryOrders\Pages\ViewDeliveryOrder;
 use App\Models\Customer;
+use App\Models\DeliveryCity;
 use App\Models\DeliveryOrder;
 use App\Models\Representative;
 use App\Models\User;
@@ -60,6 +61,11 @@ class FilamentDeliveryOrderTest extends TestCase
             ->fillForm([
                 'customer_id' => $customer->id,
                 'value' => '45.75',
+                // A destination is part of the base data of a new order since D2:
+                // the city select is required on create, so "only base data" now
+                // includes where the order is going. The customer, the value and
+                // the location link behave exactly as they did before.
+                'city_id' => $this->city('مسلاتة', '25.00')->id,
                 'location_link' => 'maps.example/place/123',
             ])
             ->call('create')
@@ -71,6 +77,26 @@ class FilamentDeliveryOrderTest extends TestCase
         $this->assertNull($order->representative_id);
         $this->assertNull($order->result);
         $this->assertSame('45.75', $order->value);
+        $this->assertSame('maps.example/place/123', $order->location_link);
+    }
+
+    public function test_a_new_order_cannot_be_created_without_a_destination_city(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $customer = $this->createCustomer('Active Customer');
+
+        // Required in the form and not in the model (D2). The counterpart of
+        // this rule is that historic orders and non-form paths keep working
+        // without a city — see `DeliveryOrderDestinationTest`.
+        Livewire::test(CreateDeliveryOrder::class)
+            ->fillForm([
+                'customer_id' => $customer->id,
+                'value' => '45.75',
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['city_id' => 'required']);
+
+        $this->assertSame(0, DeliveryOrder::query()->count());
     }
 
     public function test_inactive_customer_cannot_be_used_to_create_an_order(): void
@@ -257,6 +283,23 @@ class FilamentDeliveryOrderTest extends TestCase
             'name' => $name,
             'phone' => uniqid('phone-', true),
             'is_active' => $active,
+        ]);
+    }
+
+    /**
+     * A minimal catalog city, for the one field D2 made mandatory on create.
+     *
+     * `source_city_id` is derived from the name so repeated calls in one test do
+     * not collide on the unique index, and no case here depends on its value —
+     * orders reference the internal key.
+     */
+    private function city(string $name, ?string $price, bool $regionRequired = false): DeliveryCity
+    {
+        return DeliveryCity::create([
+            'source_city_id' => crc32($name) % 100000,
+            'name' => $name,
+            'delivery_price_lyd' => $price,
+            'is_region_required' => $regionRequired,
         ]);
     }
 

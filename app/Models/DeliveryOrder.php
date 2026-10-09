@@ -9,6 +9,7 @@ use App\Enums\LocationValidationStatus;
 use App\Enums\ReadinessStatus;
 use App\Enums\TourParticipation;
 use App\Models\Concerns\HasIntegrationUid;
+use App\Services\Catalog\DeliveryDestinationService;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -120,6 +121,40 @@ class DeliveryOrder extends Model
             $order->recipient_name ??= $customer->name;
             $order->recipient_phone ??= $customer->phone;
         });
+
+        // The destination invariant and the price snapshot (D2). On `saving`
+        // rather than `creating`, because a destination can be chosen when the
+        // order is created *and* changed afterwards, and both need the same
+        // answer.
+        //
+        // Here for the reason stated just above about the recipient: the one
+        // admin form that edits orders today is not the only path that saves
+        // one, and a rule about what may be stored belongs where storing
+        // happens. {@see DeliveryDestinationService} explains what it checks and
+        // why it acts only when the destination is actually being chosen — which
+        // is what keeps every pre-catalog order saving exactly as it did before.
+        static::saving(function (self $order): void {
+            app(DeliveryDestinationService::class)->stamp($order);
+        });
+    }
+
+    /**
+     * Whether Masar has been told about this order's assignment.
+     *
+     * The gate on editing the destination until D3 (PLAN §6). True once any
+     * event has been minted for this order, which is to say once
+     * `order.assigned` carried a snapshot Masar now stores — and from that
+     * moment a local change with no event to describe it would put the two
+     * systems into silent disagreement about one delivery.
+     *
+     * Reads `integrationState.current_version`, the same number every other
+     * caller in this system uses to ask the same question, rather than inferring
+     * it from `status` or from the presence of a representative. Both of those
+     * can be true of an order no event was ever minted for.
+     */
+    public function hasBeenAnnouncedToMasar(): bool
+    {
+        return ($this->integrationState?->current_version ?? 0) >= 1;
     }
 
     /**

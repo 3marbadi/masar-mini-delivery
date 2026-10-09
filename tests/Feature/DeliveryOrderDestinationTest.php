@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Enums\DeliveryOrderStatus;
+use App\Exceptions\InvalidOrderDestinationException;
 use App\Models\Customer;
 use App\Models\DeliveryCity;
 use App\Models\DeliveryOrder;
@@ -188,7 +189,7 @@ class DeliveryOrderDestinationTest extends TestCase
         $region->delete();
     }
 
-    public function test_the_region_relation_does_not_prove_the_region_is_in_the_city(): void
+    public function test_a_foreign_city_region_is_refused_by_the_save_path_and_not_by_the_schema(): void
     {
         [$tripoli, $sarraj] = $this->tripoli();
 
@@ -199,20 +200,28 @@ class DeliveryOrderDestinationTest extends TestCase
             'is_region_required' => true,
         ]);
 
-        // The database accepts this: both foreign keys resolve, and neither can
-        // see the other. It is recorded here deliberately — the mismatch is
-        // refused in the save path in D2 (PLAN §5.2.3), and a test asserting the
-        // schema already prevented it would be asserting something false and
-        // would let that check go unwritten.
-        $order = $this->createOrder([
-            'city_id' => $benghazi->id,
-            'region_id' => $sarraj->id,
-        ]);
+        // Both halves of the claim D1 made and D2 settled, in one case.
+        //
+        // The *schema* still cannot refuse this pair: two foreign keys resolve
+        // independently and neither can see the column beside it. So the refusal
+        // has to come from the save path, and since D2 it does — from the model's
+        // `saving` hook, which is to say from every path that stores an order and
+        // not from the admin form alone.
+        $this->expectException(InvalidOrderDestinationException::class);
+        $this->expectExceptionMessage('belongs to another city');
 
-        $this->assertTrue($order->city->is($benghazi));
-        $this->assertTrue($order->region->is($sarraj));
-        $this->assertFalse($order->region->belongsToCity($benghazi->id));
-        $this->assertTrue($order->region->belongsToCity($tripoli->id));
+        try {
+            $this->createOrder([
+                'city_id' => $benghazi->id,
+                'region_id' => $sarraj->id,
+            ]);
+        } finally {
+            // Nothing was written. The refusal happens before the insert, so the
+            // mismatch never reaches the table even for an instant.
+            $this->assertSame(0, DeliveryOrder::query()->whereNotNull('region_id')->count());
+            $this->assertFalse($sarraj->belongsToCity($benghazi->id));
+            $this->assertTrue($sarraj->belongsToCity($tripoli->id));
+        }
     }
 
     /**

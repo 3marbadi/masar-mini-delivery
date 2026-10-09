@@ -91,6 +91,36 @@ class DeliveryCity extends Model
     }
 
     /**
+     * The selectable cities, plus the one an order already carries (D2).
+     *
+     * The order form's list, and the extra clause is not a convenience. A Select
+     * whose options exclude the value it is showing renders as empty, and a form
+     * saved from that state writes the empty back — so withdrawing «طرابلس»
+     * would, on the next unrelated edit, quietly strip the destination from
+     * every طرابلس order that passed through the form. Keeping the stored row in
+     * the list is what makes a withdrawal apply to the *next* choice only.
+     *
+     * It widens the list by exactly one row, named by its primary key. Office
+     * pickup and every other withdrawn city stay out, so this cannot become a
+     * way to select one afresh — and the save path checks `is_active` against
+     * the city being *chosen* rather than the one being shown, which is the
+     * guarantee this list leans on.
+     *
+     * @param  Builder<$this>  $query
+     */
+    #[Scope]
+    public function selectableForDeliveryOrCurrent(Builder $query, ?int $currentId): void
+    {
+        $query->where(function (Builder $query) use ($currentId): void {
+            $query->selectableForDelivery();
+
+            if ($currentId !== null) {
+                $query->orWhere('id', $currentId);
+            }
+        });
+    }
+
+    /**
      * Whether this city has a decided price.
      *
      * Exists so no caller writes `=== 0.0` or a truthiness test against the

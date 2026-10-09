@@ -26,6 +26,23 @@ class DeliveryOrderUpdateService
 {
     private const FIELDS = ['value', 'location_link', 'latitude', 'longitude'];
 
+    /**
+     * The destination, which this system edits locally and does **not** publish
+     * (D2; PLAN §6).
+     *
+     * Kept out of {@see FIELDS} on purpose, so these two can never appear in
+     * `changed_fields`. The v1.0 contract has no destination paths, and inventing
+     * them here would hand the receiver a shape it does not know — exactly what
+     * the staged rollout in PLAN §8 exists to prevent. There is nothing to send
+     * in any case: `DeliveryDestinationService` refuses a destination change on
+     * an order Masar has already been told about, so the only orders whose
+     * destination can still move are ones no event was ever minted for.
+     *
+     * D3 adds the paths, teaches the receiver, and moves these two into the
+     * published set.
+     */
+    private const DESTINATION_FIELDS = ['city_id', 'region_id'];
+
     /** The paths whose movement is a location change (§13.17.8). */
     private const LOCATION_PATHS = ['location.location_link', 'location.latitude', 'location.longitude'];
 
@@ -47,6 +64,14 @@ class DeliveryOrderUpdateService
             $lockedOrder = DeliveryOrder::query()->lockForUpdate()->findOrFail($order->getKey());
             $lockedOrder->fill(Arr::only($attributes, self::FIELDS));
 
+            // Filled separately and never added to `$changes`. The names and the
+            // fee are deliberately *not* filled from the request at all: the
+            // model's `saving` hook derives them from the catalog, so a crafted
+            // post carrying its own `delivery_fee_lyd` changes nothing.
+            $lockedOrder->fill(Arr::only($attributes, self::DESTINATION_FIELDS));
+
+            $destinationChanged = $lockedOrder->isDirty(self::DESTINATION_FIELDS);
+
             $changes = [];
 
             foreach (self::FIELDS as $field) {
@@ -60,7 +85,16 @@ class DeliveryOrderUpdateService
                 ];
             }
 
-            if ($changes === []) {
+            // Nothing moved at all, so nothing is written: no save, no event, no
+            // `order_version`, no outbox row. Re-saving a form whose values are
+            // unchanged must leave the destination snapshot and the fee exactly
+            // as they were agreed, and the cheapest way to guarantee that is not
+            // to touch the row (PLAN §5.2.7).
+            //
+            // The destination is checked *beside* `$changes` rather than inside
+            // it: a region-only edit publishes nothing, so it would leave
+            // `$changes` empty and return here with the edit silently dropped.
+            if ($changes === [] && ! $destinationChanged) {
                 return $lockedOrder;
             }
 
@@ -92,7 +126,15 @@ class DeliveryOrderUpdateService
             $lockedOrder->save();
             $lockedOrder->load(['customer', 'representative', 'integrationState']);
 
-            if (($lockedOrder->integrationState?->current_version ?? 0) >= 1) {
+            // `$changes` is re-checked here and not only above. A destination-only
+            // edit reaches this point with nothing to publish, and an
+            // `order.updated` carrying an empty `changed_fields` would raise
+            // `order_version` and put a row in the outbox to announce nothing.
+            // It cannot happen today — such an edit is only permitted on an order
+            // no event was ever minted for, so the version test below already
+            // fails — but that is a coupling between two services, and this is
+            // the condition itself.
+            if ($changes !== [] && $lockedOrder->hasBeenAnnouncedToMasar()) {
                 $event = $this->events->updated($lockedOrder, $changes, $changedAt);
 
                 if ($locationChanged) {

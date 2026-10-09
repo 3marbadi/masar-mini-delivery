@@ -56,12 +56,25 @@ class DeliveryRegion extends Model
      * label. The city's own selectability is the city's question; this answers
      * the second one only.
      *
+     * `$currentId` re-admits the one region an order already carries, for the
+     * same reason the city list does it (D2): an option list that omits the
+     * value it is displaying renders empty and saves that emptiness back. The
+     * `city_id` filter stays *outside* that widening and is never relaxed, so
+     * re-admitting a withdrawn region can never re-admit another city's — which
+     * is the mistake that would turn a display fix into a foreign-region write.
+     *
      * @param  Builder<$this>  $query
      */
     #[Scope]
-    public function selectableForCity(Builder $query, int $cityId): void
+    public function selectableForCity(Builder $query, int $cityId, ?int $currentId = null): void
     {
-        $query->where('city_id', $cityId)->where('is_active', true);
+        $query->where('city_id', $cityId)->where(function (Builder $query) use ($currentId): void {
+            $query->where('is_active', true);
+
+            if ($currentId !== null) {
+                $query->orWhere('id', $currentId);
+            }
+        });
     }
 
     /**
