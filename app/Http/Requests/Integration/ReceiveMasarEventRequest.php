@@ -4,11 +4,13 @@ namespace App\Http\Requests\Integration;
 
 use App\Enums\DeliveryStatus;
 use App\Enums\OrderResultReason;
+use App\Enums\TourParticipation;
 use App\Services\Integration\LocationChangeStamp;
 use App\Services\Integration\MasarDataEnvelope;
 use App\Services\Integration\MasarLocationEnvelope;
 use App\Services\Integration\MasarNoteEnvelope;
 use App\Services\Integration\MasarStatusEnvelope;
+use App\Services\Integration\MasarTourParticipationEnvelope;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -23,13 +25,19 @@ use Illuminate\Validation\Rule;
  * processor — putting the order into an `exists:` rule would answer "unknown
  * order" as a `422` where the contract gives it a `404` with its own code.
  *
- * **Four event types now, and the body is read by type rather than by union.**
- * §13.8.1, §13.16.1 and §13.17.1 each fix a `data` block separately and forbid
- * one carrying another's fields, so validating against the sum of all four would
- * accept a status event with a `changed_fields` in it, or a note event carrying
- * a location — envelopes no contract describes. The common envelope is checked
- * once and each type's `data` block is then checked against its own rules and
- * nothing else.
+ * **Five event types now, and the body is read by type rather than by union.**
+ * §13.8.1, §13.16.1, §13.17.1 and §13.29 each fix a `data` block separately and
+ * forbid one carrying another's fields, so validating against the sum of all
+ * five would accept a status event with a `changed_fields` in it, or a note
+ * event carrying a location, or a participation event carrying a
+ * `delivery_status` — envelopes no contract describes. The common envelope is
+ * checked once and each type's `data` block is then checked against its own
+ * rules and nothing else.
+ *
+ * The fifth is the participation channel (§13.29 — D31, draft), and it is
+ * **inbound only, like the other four**. Nothing here produces a participation
+ * value; they arrive, they are checked against a closed list of three, and they
+ * are stored.
  *
  * The status reason pairing is checked rather than trusted, because §3.21.5
  * binds both ends: «القسمةُ ملزمةٌ في الطرفين لا في المرسِل وحده». A
@@ -90,8 +98,73 @@ class ReceiveMasarEventRequest extends FormRequest
             MasarDataEnvelope::EVENT_TYPE => $this->dataRules(),
             MasarNoteEnvelope::EVENT_TYPE => $this->noteRules(),
             MasarLocationEnvelope::EVENT_TYPE => $this->locationRules(),
+            MasarTourParticipationEnvelope::EVENT_TYPE => $this->participationRules(),
             default => $this->statusRules(),
         };
+    }
+
+    /**
+     * §13.29 (D31, draft) — the participation channel.
+     *
+     * **Seven fields in `data` and no eighth** — `order_id` among them, checked
+     * once in the shared envelope block above because all five channels address
+     * an order the same way (§3.21.4). Six are stated here; counting only these
+     * is what made an earlier report say six, and the schema was never short a
+     * field.
+     *
+     * `participation_version` is Masar's own
+     * sequence over this order's participation transitions and is the ordering
+     * key of this channel alone; it is never compared with `status_version`,
+     * `data_version` or `location_version` (§13.12), and the `integer` rule plus
+     * the stated ceiling do the same work they do on those three — a JSON number
+     * beyond PHP's integer range decodes as a float and is refused here, rather
+     * than overflowing into a low number at the write and then being discarded
+     * as stale.
+     *
+     * `base_order_version` is `present` and nullable rather than required, and
+     * the distinction is the same one the data channel draws (§13.8.4): Masar
+     * sends null for an order it holds without a mapping, which is a state the
+     * processor records rather than one the edge refuses. `min:0` because this
+     * company's sequence legitimately reads zero before its first outbound
+     * event.
+     *
+     * `external_courier_id` is required on the wire and may still name no
+     * representative here — that is resolved in the processor, where a miss
+     * stores null rather than inventing a courier. Requiring the *field* and
+     * tolerating an unresolvable *value* are different rules, and both are
+     * deliberate: a payload with no courier at all is malformed, while a courier
+     * this database has not seen is ordinary.
+     *
+     * `tour_departure_at` is carried for display and audit. It is emphatically
+     * not a condition of anything here, and nothing downstream reads it as
+     * evidence that a tour began. Its key is required and its value is
+     * nullable — see the rule itself for why that distinction had to be made.
+     *
+     * @return array<string, mixed>
+     */
+    private function participationRules(): array
+    {
+        return [
+            'data.participation_version' => ['required', 'integer', 'min:1', 'max:9223372036854775807'],
+            'data.participation' => ['required', Rule::in(TourParticipation::inboundCodes())],
+            'data.base_order_version' => ['present', 'nullable', 'integer', 'min:0', 'max:9223372036854775807'],
+            'data.external_courier_id' => ['required', 'string', 'max:128'],
+            // The column's own width, so a value that could not be stored is
+            // refused at the edge rather than truncated at the write.
+            'data.tour_reference' => ['required', 'string', 'max:64'],
+            // `present` + `nullable`, not `required` — and the difference is the
+            // whole of D31's one correction. Every ending Masar emits carries a
+            // null here: a participation that has ended has no departure to
+            // report, and the reconciler reaches its ending branch precisely
+            // because no live membership exists, so it has no tour to read one
+            // from and refuses to invent one. Under `required` every ending was
+            // answered `422`, which §3.21.7 makes terminal — so each one was
+            // lost for good and the order kept reading «جاري التوصيل» for a tour
+            // that had finished. The key stays mandatory, because a payload that
+            // omits it is a different shape and not an ending; only the value
+            // may be null, exactly as `base_order_version` above.
+            'data.tour_departure_at' => ['present', 'nullable', 'date_format:Y-m-d\TH:i:sP,Y-m-d\TH:i:s\Z'],
+        ];
     }
 
     /**
@@ -225,9 +298,15 @@ class ReceiveMasarEventRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            // §3.21.3, §13.8.1 — two types in this contract version, and an
-            // unknown one gets its own code so Masar can tell "you sent
+            // §3.21.3, §13.8.1, §13.29 — five types in this contract version,
+            // and an unknown one gets its own code so Masar can tell "you sent
             // nonsense" from "you sent something I have not learned yet".
+            //
+            // That distinction is now a deployment guarantee rather than a
+            // courtesy: Masar classifies `422` as terminal and never retries it,
+            // so a participation event sent before this release reached
+            // production would have been lost for good. This arm is why the
+            // receiver must ship first.
             if (! $this->isKnownEventType()) {
                 $validator->errors()->add('event_type', 'Unsupported integration event type.');
             }
@@ -240,9 +319,38 @@ class ReceiveMasarEventRequest extends FormRequest
                 MasarDataEnvelope::EVENT_TYPE => $this->validateChangedFields($validator),
                 MasarNoteEnvelope::EVENT_TYPE => $this->validateNoteContent($validator),
                 MasarLocationEnvelope::EVENT_TYPE => $this->validateCoordinateRanges($validator),
+                MasarTourParticipationEnvelope::EVENT_TYPE => $this->validateParticipation($validator),
                 default => $this->validateStatusPairing($validator),
             };
         });
+    }
+
+    /**
+     * §13.29 (D31, draft) — the participation channel binds no pair.
+     *
+     * An explicit arm rather than an omission, and it is load-bearing twice
+     * over. The `default` arm of the match above is the *status* channel, so a
+     * participation event falling through would be handed to
+     * `validateStatusPairing`, which reads `data.delivery_status` — absent on
+     * this channel — and would raise a `ValueError` from `DeliveryStatus::from`
+     * on null. An unrecognised event type cannot reach that arm, because
+     * `isKnownEventType()` has already refused it; a *recognised* one with no
+     * arm of its own can, and would.
+     *
+     * And there is genuinely nothing to check here. The other three channels
+     * each bind a pair the closed vocabulary cannot express on its own — a
+     * reason to its result, a coordinate to its range, a path to its value —
+     * while all three participation states carry the same six fields with the
+     * same meaning. `scheduled` forbids nothing that `active` permits, and
+     * `ended` forbids nothing either: the tour's reference and departure
+     * describe the participation that ended exactly as they described the one
+     * that began. Inventing a pairing to fill this arm would be a rule no
+     * contract states.
+     */
+    private function validateParticipation(Validator $validator): void
+    {
+        // Intentionally empty. See the docblock: the arm exists to keep this
+        // channel out of the status channel's pairing check, not to add a rule.
     }
 
     private function isKnownEventType(): bool
@@ -254,6 +362,7 @@ class ReceiveMasarEventRequest extends FormRequest
                 MasarDataEnvelope::EVENT_TYPE,
                 MasarNoteEnvelope::EVENT_TYPE,
                 MasarLocationEnvelope::EVENT_TYPE,
+                MasarTourParticipationEnvelope::EVENT_TYPE,
             ],
             true,
         );

@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'masar_integration_client_id', 'request_id', 'event_id', 'event_type',
     'external_order_id', 'delivery_order_id', 'payload_hash', 'status_version',
     'data_version', 'base_order_version', 'location_version', 'masar_note_id',
+    'participation_version',
     'result', 'http_status', 'error_code', 'error_message',
     'received_at', 'processed_at',
 ])]
@@ -56,6 +57,11 @@ class MasarIntegrationEvent extends Model
             // the others are — so a comparison in a test or a log reads as a
             // number — and never compared for recency anywhere.
             'masar_note_id' => 'integer',
+            // The participation channel's own number (§13.29 — D31, draft).
+            // Null on every row the other four channels write, and never a
+            // zero: null says «this channel did not speak», and `0` would say
+            // it had spoken about version zero.
+            'participation_version' => 'integer',
             'http_status' => 'integer',
             'received_at' => 'datetime',
             'processed_at' => 'datetime',

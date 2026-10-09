@@ -7,6 +7,7 @@ use App\Enums\DeliveryOrderStatus;
 use App\Enums\DeliveryStatus;
 use App\Enums\LocationValidationStatus;
 use App\Enums\ReadinessStatus;
+use App\Enums\TourParticipation;
 use App\Models\Concerns\HasIntegrationUid;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
@@ -40,6 +41,21 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'masar_status_version',
     'masar_data_version',
     'masar_location_version',
+    // The participation channel (§13.29 — D31, draft). Masar's, written only by
+    // MasarTourParticipationWriter; listed here so fixtures can construct a
+    // state the wire would have produced.
+    'masar_participation',
+    'masar_participation_version',
+    'masar_participation_base_order_version',
+    'masar_participation_changed_at',
+    'masar_participation_started_at',
+    'masar_participation_ended_at',
+    'masar_tour_departure_at',
+    'masar_tour_reference',
+    'masar_tour_started_courier_uid',
+    'masar_tour_started_representative_id',
+    // Mini Delivery's own fence, written only by DeliveryOrderLifecycleService.
+    'assignment_order_version',
     'location_changed_at',
     'location_change_source',
     'location_change_event_id',
@@ -117,6 +133,25 @@ class DeliveryOrder extends Model
         return $this->belongsTo(Location::class);
     }
 
+    /**
+     * The courier Masar named in the participation statement, resolved locally.
+     *
+     * Emphatically **not** `representative()`. That one is who this company has
+     * the order assigned to; this one is who Masar said began the participation,
+     * and the projection refuses to show an order as being delivered unless the
+     * two are the same. Keeping them as separate relations is what lets the
+     * interface say *which* of the two is which when they disagree.
+     *
+     * Null whenever `masar_tour_started_courier_uid` named no row here — an
+     * identity is never invented for an unmapped courier.
+     *
+     * @return BelongsTo<Representative, $this>
+     */
+    public function masarTourStartedRepresentative(): BelongsTo
+    {
+        return $this->belongsTo(Representative::class, 'masar_tour_started_representative_id');
+    }
+
     public function deliveryTour(): BelongsTo
     {
         return $this->belongsTo(DeliveryTour::class, 'tour_id');
@@ -170,6 +205,35 @@ class DeliveryOrder extends Model
             // (CONTRACT §13.17.3). Written only by the Masar location receiver,
             // and independent of the two versions beside it (§13.12).
             'masar_location_version' => 'integer',
+            // Where this order stands in Masar's tour execution (§13.29 — D31,
+            // draft). A fourth independent domain: its version orders this
+            // channel and nothing else, and is never compared with the three
+            // above (§13.12).
+            'masar_participation' => TourParticipation::class,
+            'masar_participation_version' => 'integer',
+            // Nullable on purpose, and the cast preserves that: Laravel's
+            // primitive casts return null untouched, so the column reads null
+            // rather than `0`. That matters — the projection's fence fails
+            // closed on null, and a `0` would compare as satisfied.
+            'masar_participation_base_order_version' => 'integer',
+            'masar_participation_changed_at' => 'datetime',
+            // Accumulating history. Neither is cleared by a later transition —
+            // `masar_participation_changed_at` carries the current one.
+            //
+            // Both hold the announcing event's `occurred_at`, which is what
+            // their names say: when Masar announced the transition. Neither is
+            // `delivery_tours.started_at`, and the operational projection reads
+            // neither.
+            'masar_participation_started_at' => 'datetime',
+            'masar_participation_ended_at' => 'datetime',
+            // Display and audit only. Deliberately read by nothing in the
+            // operational projection: a scheduled departure is an intention,
+            // and its hour passing is not evidence that a courier set off.
+            'masar_tour_departure_at' => 'datetime',
+            // Mini Delivery's own: the `order_version` of the last effective
+            // assignment. The fence that stops a superseded participation fact
+            // from reviving when an order returns to an earlier courier.
+            'assignment_order_version' => 'integer',
             // The arbiter of which side's location change happened later
             // (CONTRACT §13.17.5, D13). Distinct from `location_completed_at`
             // beside it: that is Masar's field fact and moves only for a

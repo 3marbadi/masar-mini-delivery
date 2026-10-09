@@ -5,11 +5,14 @@ namespace App\Providers;
 use App\Models\MasarIntegrationClient;
 use App\Models\Representative;
 use App\Policies\RepresentativePolicy;
+use App\Support\DestructiveDatabaseGuard;
 use Filament\Support\Assets\Css;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
@@ -37,6 +40,19 @@ class AppServiceProvider extends ServiceProvider
         // bound by a naming coincidence, and renaming either class would silently
         // open the ability rather than break the build.
         Gate::policy(Representative::class, RepresentativePolicy::class);
+
+        // The target of a destroying command must be stated, never inherited.
+        //
+        // `migrate:fresh` run without naming a database resolves whatever
+        // `config('database.connections.mysql.database')` happens to be — which
+        // in this checkout is the end-to-end database, not the test one — and
+        // drops every table in it without asking. That happened, and it cost a
+        // hundred rows of fixture data.
+        //
+        // Hooked on `CommandStarting` rather than inside any one command,
+        // because the point is to cover the commands nobody thought about,
+        // including the ones a future Laravel adds.
+        Event::listen(CommandStarting::class, [DestructiveDatabaseGuard::class, 'assertCommandIsSafe']);
 
         // The stylesheet for the «حساب مسار» card and its one-time credential modal.
         //
