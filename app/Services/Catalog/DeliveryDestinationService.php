@@ -7,6 +7,7 @@ use App\Exceptions\InvalidOrderDestinationException;
 use App\Models\DeliveryCity;
 use App\Models\DeliveryOrder;
 use App\Models\DeliveryRegion;
+use App\Services\Integration\DestinationPayload;
 
 /**
  * The one authority on what destination an order may carry, and what it costs
@@ -65,6 +66,17 @@ use App\Models\DeliveryRegion;
 class DeliveryDestinationService
 {
     /**
+     * The three columns this service derives and nobody else may set.
+     *
+     * Named once because two rules read the same list: the stamp writes them
+     * from the catalog, and {@see assertSnapshotIsNotEditedAlone()} refuses them
+     * from anywhere else.
+     *
+     * @var list<string>
+     */
+    private const SNAPSHOT_COLUMNS = ['city_name', 'region_name', 'delivery_fee_lyd'];
+
+    /**
      * Validate the destination on an order about to be saved, and stamp its
      * snapshot.
      *
@@ -86,6 +98,8 @@ class DeliveryDestinationService
         // clean, nothing would be recomputed, and a client-supplied fee would
         // survive onto an order with nowhere to go.
         if ($order->exists && ! $cityChanged && ! $regionChanged) {
+            $this->assertSnapshotIsNotEditedAlone($order);
+
             return;
         }
 
@@ -187,6 +201,64 @@ class DeliveryDestinationService
     }
 
     /**
+     * Refuses a snapshot edited on its own (D3, closing a D2 gap).
+     *
+     * **The hole this closes, exactly as it was found.** D2 put the snapshot
+     * under the service's control by deriving `city_name`, `region_name` and
+     * `delivery_fee_lyd` from the catalog whenever the destination moved — and
+     * then returned early when it had not. But the three columns stayed mass
+     * assignable, so `$order->update(['delivery_fee_lyd' => '0.01'])` moved
+     * neither `city_id` nor `region_id`, took the early return, and wrote a fee
+     * nobody approved onto an order whose destination was never touched. The
+     * same held for the two names: an order could be made to claim it was going
+     * somewhere it was not. Both are reproduced and then refused in
+     * `OrderSnapshotIntegrityTest`.
+     *
+     * **Why here and not by narrowing `$fillable`.** Removing the three from the
+     * fillable list would break the fixtures that legitimately pass them at
+     * creation — where they are overwritten from the catalog anyway — and would
+     * not actually close the hole, because `forceFill()` never consulted
+     * `$fillable` in the first place. The rule is "the snapshot is derived, never
+     * supplied", and the only place that can hold for every write is the save
+     * path. So mass assignment is left exactly as it was and the invariant moved
+     * to where saving happens.
+     *
+     * **It fires only on an existing order whose destination did not move.** A
+     * new record is stamped unconditionally a few lines above, so a fee posted
+     * with a create is discarded rather than refused — there is no stored value
+     * for it to corrupt, and a create that named a city gets the catalog's
+     * figures regardless. A legitimate city change reprices under D2's rules,
+     * and a region-only change keeps the fee it was agreed at; neither reaches
+     * this method.
+     *
+     * `saveQuietly()` bypasses every model event and therefore this check too.
+     * That is Eloquent's documented escape hatch rather than a gap: it is used in
+     * tests to construct a state the wire would have produced, and a caller that
+     * reaches for it has said in as many words that it wants no domain rules.
+     *
+     * @throws InvalidOrderDestinationException
+     */
+    private function assertSnapshotIsNotEditedAlone(DeliveryOrder $order): void
+    {
+        $edited = array_values(array_filter(
+            self::SNAPSHOT_COLUMNS,
+            static fn (string $column): bool => $order->isDirty($column),
+        ));
+
+        if ($edited === []) {
+            return;
+        }
+
+        throw new InvalidOrderDestinationException(sprintf(
+            'Order [%s] had its destination snapshot (%s) edited without its city or region changing. '
+            .'The snapshot is derived from the catalog when the destination is chosen and is never supplied '
+            .'by a caller; change the city to reprice, or leave the snapshot alone.',
+            (string) $order->getKey(),
+            implode(', ', $edited),
+        ));
+    }
+
+    /**
      * The fee a city would charge, for the form's preview.
      *
      * Display only, and the form shows it through a component that is never
@@ -208,29 +280,44 @@ class DeliveryDestinationService
 
     /**
      * Refuses a destination change on an order Masar has already been told
-     * about — the one restriction D3 exists to lift.
+     * about — **unless destination synchronisation is on** (D3 lifted this).
      *
-     * **Why it has to be here and not only in the form.** The destination of an
-     * assigned order has already travelled: `order.assigned` carried a snapshot,
-     * and Masar stores it against that order. Changing the city here would leave
-     * the two systems describing the same delivery differently, with no event
-     * able to reconcile them — `order.updated` has no destination paths in the
-     * v1.0 contract, so there is nothing truthful to send. The alternatives are
-     * both worse than refusing: send an event whose shape the receiver does not
-     * know, or change it locally and say nothing.
+     * **Why it existed.** The destination of an assigned order has already
+     * travelled: `order.assigned` carried a snapshot and Masar stores it against
+     * that order. Changing the city here would leave the two systems describing
+     * one delivery differently, with no event able to reconcile them, because
+     * §3.7's `changed_fields` vocabulary had no destination path. The two
+     * alternatives were both worse than refusing: send a shape the receiver does
+     * not know — which it answers `422`, terminal and never retried (§3.21.7) —
+     * or change it locally and say nothing.
      *
-     * **What D3 replaces this with.** Destination fields in `changed_fields` and
-     * `current_snapshot`, a receiver that understands them, and a staged rollout
-     * in which Masar is deployed first. Once an `order.updated` can carry the
-     * change, this refusal becomes a restriction with no reason behind it and
-     * should be deleted in the same commit that adds the paths.
+     * **What lifted it.** D3 adds the five paths to §3.7 (v5.19), teaches the
+     * receiver to apply them, and keeps the whole feature behind
+     * `services.masar.destination_sync`. So the condition is no longer "has this
+     * been announced" but "can the change be told": with the flag on, a
+     * destination edit produces a real `order.updated` carrying
+     * `order.destination.*` and, where it moved, `order.delivery_cost`, and the
+     * two systems stay in step.
      *
-     * Orders never announced are untouched by this: there is no counterpart to
-     * disagree with, and editing them emits nothing.
+     * **It is kept, rather than deleted, precisely because of the rollout.**
+     * While the flag is off this side must behave exactly as D2 did, or the
+     * window between the two deployments becomes the one state nobody tested: an
+     * edit applied locally and suppressed on the wire. Deleting the method would
+     * have created that window. It is removed for good once the flag has been on
+     * in production long enough that no deployment can be behind it.
+     *
+     * Orders never announced are untouched either way: there is no counterpart
+     * to disagree with, and editing them emits nothing.
      */
     private function assertNotAlreadyAnnounced(DeliveryOrder $order, bool $cityChanged, bool $regionChanged): void
     {
         if (! $order->exists || ! ($cityChanged || $regionChanged)) {
+            return;
+        }
+
+        // The lift. With synchronisation on, the change has a path to travel on
+        // and `DeliveryOrderUpdateService` puts it there.
+        if (DestinationPayload::enabled()) {
             return;
         }
 
@@ -239,9 +326,10 @@ class DeliveryDestinationService
         }
 
         throw new InvalidOrderDestinationException(
-            "Order [{$order->getKey()}] has already been announced to Masar, so its destination cannot be changed. "
-            .'The v1.0 event contract carries no destination paths, so the change could not be transmitted; '
-            .'D3 adds them and lifts this restriction.',
+            "Order [{$order->getKey()}] has already been announced to Masar, so its destination cannot be changed "
+            .'while destination synchronisation is off. Masar would never learn of the change, and the two systems '
+            .'would describe one delivery differently. Enable services.masar.destination_sync once Masar\'s '
+            .'receiver is deployed (CONTRACT §3.7, v5.19 — D3).',
         );
     }
 

@@ -30,6 +30,20 @@
         <env name="DB_USERNAME" value="root"/>
         <env name="DB_PASSWORD" value=""/>
         <env name="DB_URL" value=""/>
+        <!--
+            Destination synchronisation is off for the suite, and forced (D3).
+
+            `force` rather than a plain value, because this must not depend on a
+            developer's `.env` or on an exported variable: the flag decides what
+            the outbound payloads contain and whether an announced order's
+            destination may be edited, so a suite that inherited it would pass or
+            fail by accident. Off is also the shipping default, so the regression
+            suite exercises the state the release is in.
+
+            The cases that need it on turn it on themselves, through
+            `config(['services.masar.destination_sync' => true])`.
+        -->
+        <env name="MASAR_DESTINATION_SYNC_ENABLED" value="false" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

@@ -8,6 +8,7 @@ use App\Models\DeliveryOrder;
 use App\Models\DeliveryRegion;
 use App\Rules\RegionBelongsToSelectedCity;
 use App\Services\Catalog\DeliveryDestinationService;
+use App\Services\Integration\DestinationPayload;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -200,14 +201,21 @@ class DeliveryOrderForm
     }
 
     /**
-     * Whether Masar already holds this order's destination.
+     * Whether this order's destination is frozen because Masar already holds it.
      *
-     * Disables the two selects, and the save path refuses the change as well —
-     * a disabled field is a courtesy to the operator, not a boundary (PLAN §6).
-     * D3 lifts both halves together.
+     * False as soon as destination synchronisation is on: from then the change
+     * travels as an `order.updated` carrying `order.destination.*`, so there is
+     * nothing left to protect against and the two selects are live again
+     * (CONTRACT §3.7, v5.19 — D3).
+     *
+     * While it is off this stays exactly D2's behaviour, and the save path
+     * refuses the change as well — a disabled field is a courtesy to the
+     * operator, never a boundary.
      */
     private static function isSynchronised(?DeliveryOrder $record): bool
     {
-        return $record !== null && $record->hasBeenAnnouncedToMasar();
+        return ! DestinationPayload::enabled()
+            && $record !== null
+            && $record->hasBeenAnnouncedToMasar();
     }
 }

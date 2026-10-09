@@ -41,6 +41,24 @@ return [
          */
         'credential_read_timeout' => (int) env('MASAR_CREDENTIAL_READ_TIMEOUT', 5),
         'credential_mutation_timeout' => (int) env('MASAR_CREDENTIAL_TIMEOUT', 10),
+
+        /*
+         * Whether outbound events carry the administrative destination and the
+         * approved delivery fee (Masar CONTRACT §3.7, v5.19 — D3).
+         *
+         * Off by default, and that default is the deployment order rather than
+         * caution. Masar answers an event it cannot validate with `422`, and
+         * §3.21.7 makes every 4xx terminal and never retried — so sending the new
+         * fields to a receiver that predates them would not be a degraded sync,
+         * it would lose those orders for good. The receiver ships first and
+         * accepts both shapes; this is switched on afterwards.
+         *
+         * It gates both halves of the feature on purpose. While it is off, the
+         * destination also cannot be edited on an order Masar has already been
+         * told about — an edit applied locally and suppressed on the wire is
+         * precisely the silent divergence D2's restriction existed to prevent.
+         */
+        'destination_sync' => (bool) env('MASAR_DESTINATION_SYNC_ENABLED', false),
     ],
 
     /*
