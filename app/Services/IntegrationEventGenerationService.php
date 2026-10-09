@@ -9,6 +9,7 @@ use App\Models\DeliveryOrder;
 use App\Models\IntegrationOutbox;
 use App\Models\OrderIntegrationState;
 use App\Models\Representative;
+use App\Services\Integration\DestinationPayload;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -197,13 +198,25 @@ class IntegrationEventGenerationService
         ];
     }
 
-    /** @return array<string, string> */
+    /**
+     * The order's own section of a snapshot.
+     *
+     * `amount` is what the goods are worth; `delivery_cost` beside it is what the
+     * delivery itself was charged, and the two are never conflated (§13.3). Both
+     * are decimal strings.
+     *
+     * The destination and the fee are appended by {@see DestinationPayload},
+     * which returns nothing while the rollout flag is off — so this envelope
+     * stays byte-for-byte the pre-D3 one until Masar's receiver is deployed.
+     *
+     * @return array<string, mixed>
+     */
     private function orderSnapshot(DeliveryOrder $order): array
     {
         return [
             'external_order_id' => (string) $order->integration_uid,
             'amount' => $order->value,
-        ];
+        ] + DestinationPayload::forSnapshot($order);
     }
 
     /**

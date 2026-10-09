@@ -9,6 +9,7 @@ use App\Enums\LocationValidationStatus;
 use App\Enums\ReadinessStatus;
 use App\Enums\TourParticipation;
 use App\Models\Concerns\HasIntegrationUid;
+use App\Services\Catalog\DeliveryDestinationService;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -27,6 +28,16 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'location_id',
     'tour_id',
     'value',
+    // The destination the employee chose, and what it cost (PLAN D1 §4.1).
+    // `city_name`, `region_name` and `delivery_fee_lyd` are snapshots: written
+    // beside the references and never revised by a later edit to the catalog, so
+    // renaming a city or repricing it cannot rewrite what a past order says it
+    // was, or what it was charged.
+    'city_id',
+    'region_id',
+    'city_name',
+    'region_name',
+    'delivery_fee_lyd',
     'delivery_payer',
     'location_link',
     'latitude',
@@ -110,6 +121,40 @@ class DeliveryOrder extends Model
             $order->recipient_name ??= $customer->name;
             $order->recipient_phone ??= $customer->phone;
         });
+
+        // The destination invariant and the price snapshot (D2). On `saving`
+        // rather than `creating`, because a destination can be chosen when the
+        // order is created *and* changed afterwards, and both need the same
+        // answer.
+        //
+        // Here for the reason stated just above about the recipient: the one
+        // admin form that edits orders today is not the only path that saves
+        // one, and a rule about what may be stored belongs where storing
+        // happens. {@see DeliveryDestinationService} explains what it checks and
+        // why it acts only when the destination is actually being chosen — which
+        // is what keeps every pre-catalog order saving exactly as it did before.
+        static::saving(function (self $order): void {
+            app(DeliveryDestinationService::class)->stamp($order);
+        });
+    }
+
+    /**
+     * Whether Masar has been told about this order's assignment.
+     *
+     * The gate on editing the destination until D3 (PLAN §6). True once any
+     * event has been minted for this order, which is to say once
+     * `order.assigned` carried a snapshot Masar now stores — and from that
+     * moment a local change with no event to describe it would put the two
+     * systems into silent disagreement about one delivery.
+     *
+     * Reads `integrationState.current_version`, the same number every other
+     * caller in this system uses to ask the same question, rather than inferring
+     * it from `status` or from the presence of a representative. Both of those
+     * can be true of an order no event was ever minted for.
+     */
+    public function hasBeenAnnouncedToMasar(): bool
+    {
+        return ($this->integrationState?->current_version ?? 0) >= 1;
     }
 
     /**
@@ -131,6 +176,41 @@ class DeliveryOrder extends Model
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
+    }
+
+    /**
+     * The catalog city this order is going to (PLAN D1 §4.1).
+     *
+     * Null on every order placed before the catalog existed, and on any order
+     * whose destination has not been set — which is an absence rather than an
+     * unknown, and the reason nothing here was backfilled.
+     *
+     * Emphatically not the same information as {@see location()}: that is where
+     * the parcel is, in coordinates, and it is what routing reads. This is the
+     * administrative destination the employee chose and what the price was based
+     * on. Neither substitutes for the other, and choosing a city never moves a
+     * pin.
+     *
+     * @return BelongsTo<DeliveryCity, $this>
+     */
+    public function city(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryCity::class, 'city_id');
+    }
+
+    /**
+     * The region within that city, where the city demands one.
+     *
+     * Null for the 86 cities that do not, and for historic orders. That the
+     * region belongs to `city_id` is not something this relation can promise —
+     * a foreign key cannot see the column beside it — and it is enforced in the
+     * save path in D2 (PLAN §5.2.3).
+     *
+     * @return BelongsTo<DeliveryRegion, $this>
+     */
+    public function region(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryRegion::class, 'region_id');
     }
 
     /**
@@ -190,6 +270,11 @@ class DeliveryOrder extends Model
     {
         return [
             'value' => 'decimal:2',
+            // What this order was charged for delivery, fixed at registration
+            // (PLAN §4.3). Null is not free delivery: it is the state of the
+            // four cities the source file prices at nothing, and the cast
+            // returns it untouched so the two never merge.
+            'delivery_fee_lyd' => 'decimal:2',
             'latitude' => 'decimal:7',
             'longitude' => 'decimal:7',
             'location_validation_status' => LocationValidationStatus::class,

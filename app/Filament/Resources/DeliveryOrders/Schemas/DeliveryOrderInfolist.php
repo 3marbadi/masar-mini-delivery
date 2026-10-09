@@ -207,6 +207,32 @@ class DeliveryOrderInfolist
 
                         TextEntry::make('customer.name')->label('العميل'),
                         TextEntry::make('customer.phone')->label('هاتف العميل'),
+
+                        // The destination as *this order* recorded it, read from
+                        // the order's own snapshot columns and never from the
+                        // catalog (D2). An order sent to «طرابلس» keeps saying
+                        // «طرابلس» after the catalog row is renamed, and its fee
+                        // keeps saying what was charged after the city is
+                        // repriced — so this page shows what happened, not what
+                        // the price list says today.
+                        TextEntry::make('city_name')
+                            ->label('المدينة')
+                            ->placeholder('—'),
+                        TextEntry::make('region_name')
+                            ->label('المنطقة')
+                            ->placeholder('—'),
+                        TextEntry::make('delivery_fee_lyd')
+                            ->label('سعر التوصيل')
+                            ->money('LYD')
+                            // Null is not zero and must not read as free
+                            // delivery. An order with a city but no fee is one of
+                            // the four unpriced cities and says so in words; an
+                            // order with no destination at all is simply blank
+                            // (PLAN §4.3).
+                            ->placeholder(fn (DeliveryOrder $record): string => $record->city_id === null
+                                ? '—'
+                                : DeliveryOrderForm::UNDETERMINED_PRICE),
+
                         TextEntry::make('representative.name')
                             ->label('المندوب المسند')
                             ->placeholder('غير مسند'),

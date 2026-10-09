@@ -2,7 +2,23 @@
 
 Status: Approved design baseline  
 Contract version: `1.0`  
-Direction: Mini Delivery → Masar only
+Direction: Mini Delivery → Masar only  
+Last additive revision: D3 — the administrative destination and the approved delivery fee (Masar CONTRACT.md v5.19)
+
+> **D3 is additive and `contract_version` stays `1.0`.** Two keys were added to
+> the `order` section of every snapshot — `delivery_cost` and `destination` — and
+> five paths were added to `changed_fields`. No event type, existing path or
+> envelope key changed, and an event that carries none of the new keys is still
+> valid. A receiver that predates D3 is not broken by this document; a producer
+> that predates it is not refused by Masar.
+>
+> **The rollout is ordered and enforced by a flag.** Masar's receiver deploys
+> first. Mini Delivery only sends the new fields once
+> `MASAR_DESTINATION_SYNC_ENABLED` is on, and while it is off the payloads are
+> byte-for-byte the pre-D3 ones. The reason is section 21's: Masar answers an
+> event it cannot validate with `422`, which this contract makes terminal and
+> never retried — so sending a field too early loses the order rather than
+> delaying it.
 
 ## 1. Architecture decision summary
 
@@ -198,6 +214,13 @@ When `order.assigned` reaches Masar, Masar adds it to its assigned-order facts. 
     "external_order_id": "01998f4c-7a10-7c3e-9b52-6d1f0a4e8c71",
     "status": "assigned",
     "value": "120.00",
+    "delivery_cost": "15.00",
+    "destination": {
+      "city_id": "2",
+      "city_name": "طرابلس",
+      "region_id": "27",
+      "region_name": "السراج"
+    },
     "created_at": "2026-08-14T09:50:00Z",
     "assigned_at": "2026-08-14T10:00:00Z"
   },
@@ -221,6 +244,44 @@ When `order.assigned` reaches Masar, Masar adds it to its assigned-order facts. 
 ```
 
 Money and coordinates are JSON strings to preserve database decimal precision. Masar validates and converts them to its chosen exact numeric representation.
+
+### The destination and the delivery fee (D3)
+
+`value` is what the customer's goods are worth. `delivery_cost` beside it is what
+the delivery itself was charged. They are two amounts that happen to both be
+money, and nothing on either side may conflate them: Masar stores the first
+through its own reconciliation path and the second in `orders.delivery_cost`.
+
+| Field | Type | Required | Rule |
+|---|---|---|---|
+| `order.delivery_cost` | string, 2dp, or `null` | Optional | The fee approved for this order, fixed when it was registered. `null` means no price has been decided — the state of the four cities the catalog prices at nothing — and is **not** a fee of zero. `0.00` is a decided price |
+| `order.destination` | object or `null` | Optional | `null` for an order with no administrative destination, which is every order placed before the catalog existed |
+| `order.destination.city_id` | string | Required in the object | The **catalog source id** of the city — `delivery_cities.source_city_id` |
+| `order.destination.city_name` | string | Required in the object | The city's name **as this order was registered under it** |
+| `order.destination.region_id` | string or `null` | Required key | The region's catalog source id. `null` for the 86 cities that demand no region |
+| `order.destination.region_name` | string or `null` | Required key | The region's name as registered, or `null` |
+
+**The identifiers are the catalog's, never Mini Delivery's primary keys.** The
+internal key an order references is this database's own business and means
+nothing on the far side; the source id is the one both companies can name. This
+is the same distinction `external_order_id` already draws, for the same reason —
+see section 8's "Why not the primary key".
+
+**The names are the order's snapshot, never the catalog's current spelling.**
+Masar is told what this order was sent to under the name it was agreed under, so
+a later correction in the catalog cannot rewrite the description of a delivery
+that has already happened — and could not be noticed across a system boundary if
+it did.
+
+**Absent is not `null`.** An absent key means the producer stated nothing and the
+receiver leaves whatever it holds alone. An explicit `null` is a statement that
+there is no value, and clears it. This is the same rule `customer.reception_rate`
+already follows (section 10).
+
+**The destination is administrative, not geographic.** It is what the order is
+billed and described under. The position is `location.latitude` / `longitude`,
+and that is what routing reads. Choosing a city never moves a pin, never stamps a
+location change, and never alters the coordinates — on either side.
 
 ## 10. Customer reception rate contract
 
@@ -344,7 +405,34 @@ order.value
 location.location_link
 location.latitude
 location.longitude
+
+# Added by D3 — the administrative destination and its fee.
+order.delivery_cost
+order.destination.city_id
+order.destination.city_name
+order.destination.region_id
+order.destination.region_name
 ```
+
+**Only what actually moved is declared.** A city change declares the city paths,
+the region paths where the region moved with it, and `order.delivery_cost` where
+the fee moved — and a region-only change declares the two region paths and
+nothing else, because the catalog prices cities and the fee did not move. A path
+whose `old` and `new` would be equal is never declared.
+
+**A declared destination or fee path must be stated in the snapshot.** The
+`order` section being present is not enough — `amount` alone would satisfy that —
+so `current_snapshot.order` must carry the `destination` key for any declared
+`order.destination.*` path, and the `delivery_cost` key for a declared
+`order.delivery_cost`, even when the value is `null`. Masar refuses `422`
+otherwise, because a missing key would otherwise read as a null new value and
+clear something the producer never meant to clear.
+
+**Masar raises no route re-evaluation for these five paths on their own**, and
+that is a receiver-side guarantee recorded here because the producer relies on
+it: a destination is administrative, so a fee or a city-name change costs nothing
+in routing. An update that also moves a location or a value keeps that path's
+existing trigger exactly.
 
 Mini Delivery sends all supported relevant changes and does not include `affects_route`, `impact`, `minor`, `medium`, or `high`. Masar compares and classifies the change.
 
