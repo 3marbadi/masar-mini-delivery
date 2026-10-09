@@ -52,15 +52,38 @@ class DeliveryOrderLifecycleService
             ])->save();
             $lockedOrder->load(['customer', 'representative', 'integrationState']);
 
-            if (
+            $event = (
                 $wasAssigned
                 && $previousRepresentative !== null
                 && ($lockedOrder->integrationState?->current_version ?? 0) >= 1
-            ) {
-                $this->events->reassigned($lockedOrder, $previousRepresentative);
-            } else {
-                $this->events->assigned($lockedOrder);
-            }
+            )
+                ? $this->events->reassigned($lockedOrder, $previousRepresentative)
+                : $this->events->assigned($lockedOrder);
+
+            // The fence Masar's participation statements are judged against
+            // (§13.29 — D31, draft). It is the `order_version` of *this* event,
+            // read off the row the generator just wrote, and never a value
+            // predicted before it or re-read from `integrationState` after it:
+            // `current_version` moves for `order.updated` and `order.cancelled`
+            // too, so taking it here rather than from the event would raise the
+            // fence on changes that are not assignments and would then discard
+            // a perfectly good participation statement.
+            //
+            // Written in this transaction, after the event and with it. A fence
+            // that committed without its event — or an event without its fence
+            // — would leave the two disagreeing about which assignment the next
+            // announcement belongs to, which is the whole thing this column
+            // exists to settle.
+            //
+            // `forceFill` on one column: this is bookkeeping about an event
+            // already raised, not a change Masar needs to hear about, so it
+            // raises nothing of its own. The idempotent no-op branch above
+            // returned long before reaching here, so a reassignment to the
+            // courier who already holds the order does not move the fence —
+            // nothing was reassigned.
+            $lockedOrder->forceFill([
+                'assignment_order_version' => (int) $event->order_version,
+            ])->save();
 
             return $lockedOrder->refresh();
         });

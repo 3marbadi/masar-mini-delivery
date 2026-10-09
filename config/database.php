@@ -181,4 +181,29 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Destructive Command Allowlist
+    |--------------------------------------------------------------------------
+    |
+    | The databases that `migrate:fresh`, `migrate:refresh`, `migrate:reset`
+    | and `db:wipe` may destroy. Every other database refuses those commands —
+    | see App\Support\DestructiveDatabaseGuard for why the default is refusal.
+    |
+    | Only the test database is listed, and it has to be: RefreshDatabase runs
+    | `migrate:fresh` through Artisan on every suite. Disposable databases need
+    | no listing — any name matching `masar_md_scratch_*` is accepted, which
+    | keeps throwaway work possible without widening this list.
+    |
+    | Deliberately absent: the development and end-to-end databases. Losing
+    | `masar_mini_delivery_e2e` to an unqualified `migrate:fresh` is the
+    | incident this setting exists to prevent, so listing it would undo the fix.
+    |
+    */
+
+    'destructive_allowlist' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env('DB_DESTRUCTIVE_ALLOWLIST', 'masar_mini_delivery_testing')),
+    ))),
+
 ];

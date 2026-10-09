@@ -2,9 +2,10 @@
 
 namespace App\Filament\Widgets;
 
-use App\Enums\DeliveryOrderStatus;
 use App\Filament\Resources\DeliveryOrders\DeliveryOrderResource;
+use App\Filament\Support\OrderStatusPresenter;
 use App\Models\DeliveryOrder;
+use App\Services\OperationalStatusProjection;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Filament\Widgets\TableWidget;
@@ -24,15 +25,25 @@ class RecentOrders extends TableWidget
                 TextColumn::make('id')->label('رقم الطلب'),
                 TextColumn::make('customer.name')->label('العميل'),
                 TextColumn::make('representative.name')->label('المندوب')->placeholder('غير مسند'),
-                TextColumn::make('status')
-                    ->label('الحالة')
+                // The operational state leads here, as it does in the orders
+                // table — this widget answers "what is happening right now".
+                TextColumn::make('operational_status')
+                    ->label('الحالة التشغيلية')
                     ->badge()
-                    ->formatStateUsing(fn (DeliveryOrderStatus $state): string => match ($state) {
-                        DeliveryOrderStatus::NewOrder => 'جديد',
-                        DeliveryOrderStatus::Assigned => 'مُسند',
-                        DeliveryOrderStatus::Completed => 'مكتمل',
-                        DeliveryOrderStatus::Cancelled => 'ملغي',
-                    }),
+                    ->state(fn (DeliveryOrder $record): string => OrderStatusPresenter::operationalLabel($record))
+                    ->color(fn (DeliveryOrder $record): string => OrderStatusPresenter::operationalColor($record)),
+                // And the company's own verdict beside it, shown only when it
+                // says something `open` does not.
+                TextColumn::make('administrative_state')
+                    ->label('الحالة الإدارية')
+                    ->badge()
+                    ->state(function (DeliveryOrder $record): ?string {
+                        $state = OperationalStatusProjection::administrativeFor($record);
+
+                        return $state->dominatesDisplay() ? $state->label() : null;
+                    })
+                    ->color(fn (DeliveryOrder $record): string => OperationalStatusProjection::administrativeFor($record)->color())
+                    ->placeholder('—'),
                 TextColumn::make('value')->label('القيمة')->money('LYD'),
                 TextColumn::make('created_at')->label('تاريخ الإنشاء')->dateTime(),
             ])
